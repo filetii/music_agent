@@ -1,7 +1,7 @@
 """Provider-neutral conversation types and the interface every LLM adapter implements."""
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 from ..tools import Tool
 
@@ -30,9 +30,6 @@ class UserMessage:
 class AssistantMessage:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
-    # Provider-native content, replayed verbatim on the next request. Anthropic needs this:
-    # thinking blocks must come back unchanged or the API rejects the conversation.
-    raw: Any = None
 
 
 @dataclass

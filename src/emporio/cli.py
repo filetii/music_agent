@@ -1,6 +1,6 @@
 """Terminal chat with the agent.
 
-    emporio [--provider anthropic|ollama] [--debug]
+    emporio [--debug]
 
 Commands: /save [file] exports the conversation (with tool calls) to markdown,
 /reset starts a new conversation, /debug toggles tool-call display, /sair exits.
@@ -43,7 +43,6 @@ def save_transcript(path: Path, settings: Settings, session: Session, turns: lis
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chat with the Empório da Música assistant.")
-    parser.add_argument("--provider", choices=["anthropic", "ollama"], help="overrides LLM_PROVIDER")
     parser.add_argument("--debug", action="store_true", help="show tool calls")
     args = parser.parse_args()
 
@@ -51,7 +50,7 @@ def main() -> None:
         stream.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-    settings = load_settings(args.provider)
+    settings = load_settings()
     session = create_session(settings)
     debug = args.debug
     turns: list[tuple[str, Reply]] = []

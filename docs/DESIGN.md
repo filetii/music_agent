@@ -93,18 +93,21 @@ Four concerns had to be placed: structured lookups, policy retrieval, orchestrat
 
 | Decision | Choice | Why |
 |---|---|---|
-| LLM (paid) | Anthropic `claude-opus-5-5`, effort configurable (start `low`) | Strong tool use and Portuguese; server-side refusal fallbacks enabled |
-| LLM (free) | Ollama `qwen3:8b` | Native tool calling, decent PT-BR, fits a 6 GB GPU at Q4; evaluators can run without an API key |
-| Framework | Thin custom layer (`LLMClient` protocol + 2 adapters + ~50-line loop) | Two providers only; every tool call visible; nothing to justify or fight |
+| LLM | Ollama `qwen3:8b`, local and free | Native tool calling, decent PT-BR, fits a 6 GB GPU at Q4; anyone can run it without an API key or cost |
+| Framework | Thin custom layer (`LLMClient` protocol + Ollama adapter + ~50-line loop) | Every tool call visible; nothing to justify or fight; the protocol also lets tests drive the loop with a scripted fake model |
 | Data access | `csv` + dataclasses, validated at startup | 65 rows; no NaN/dtype surprises; typed and testable |
 | Price math | Deterministic code (`Decimal`) | Promotion vs PIX vs installments vs freight must never be LLM arithmetic |
 | Policy windows | Tools compute *facts* (days elapsed); the LLM applies the policy text | Keeps the manual as the single source of truth for rules |
 | Policy retrieval | Section lookup by id (C1) | Explicit, logged, testable; no embeddings |
 | Conversation | In-session, append-only history; no cross-session memory | Follow-ups need history; verified identity must not outlive the session |
-| Interface | CLI (`--provider`, `--debug`, `/save`) | Reproducible, zero UI dependencies; `/save` produces the example transcripts |
+| Interface | CLI (`--debug`, `/save`) | Reproducible, zero UI dependencies; `/save` produces the example transcripts |
 | Language | Code and docs in English; agent replies in PT-BR | |
 
 ---
+
+### 3.1 Change of plan: free models only
+
+The original plan paired the local model with a paid one (Anthropic `claude-opus-5-5`) and the first implementation had both adapters. The Anthropic API is billed separately from a Claude subscription, so the project was narrowed to free, local inference only: the paid adapter was removed (it remains in the git history) and the provider-neutral `LLMClient` seam was kept, so adding a hosted model later is a single new file.
 
 ## 4. Detailed design
 
@@ -114,7 +117,6 @@ Four concerns had to be placed: structured lookups, policy retrieval, orchestrat
 flowchart LR
   U[Customer<br/>CLI REPL] --> S[Agent session<br/>loop + history + trace]
   S <--> L{{LLMClient protocol}}
-  L --> AC[AnthropicClient<br/>claude-opus-5-5]
   L --> OC[OllamaClient<br/>qwen3:8b]
   S --> TR[Tool registry<br/>schemas + validation + envelope]
   TR --> T1[search_products]
@@ -181,8 +183,7 @@ sequenceDiagram
 
 - At most `MAX_TOOL_STEPS` (6) LLM↔tool round trips per customer message; then a safe fallback reply.
 - Tool handlers never raise: validation failures and exceptions become `invalid_input` / `error` envelopes the model can react to.
-- **History is append-only**, and the system prompt and tool list are frozen at session start (the reference date/time is computed once per session). Opus 5.5 binds its thinking blocks to the exact conversation prefix, and append-only histories also keep the prompt cache warm. Only the Ollama adapter trims old turns to fit its context window.
-- Anthropic: adaptive thinking (always on for Opus 5.5), configurable effort, refusal / max-tokens stop reasons handled, server-side refusal fallback enabled.
+- **History is append-only**, and the system prompt and tool list are frozen at session start (the reference date/time is computed once per session). This keeps runs reproducible and lets any provider with prefix caching reuse earlier turns; the Ollama adapter only trims whole old turns to fit its context window.
 - Ollama: thinking disabled for latency, `num_ctx=8192` (the default context silently truncates the prompt), low temperature.
 
 ### 4.5 System prompt structure
@@ -202,5 +203,5 @@ Written in English, instructing the model to always answer in Brazilian Portugue
 
 1. **Unit tests** (no LLM): pricing (e.g. Takamine GD20 R$2.199,00 → R$2.089,05 via PIX; product 94 with 8% promotion → R$5.519,08 and no extra PIX discount), search filters (violões up to R$1000 → exactly 12 available), availability edge cases, identity check, day-count facts, description suppression, policy extraction facts.
 2. **Loop tests** with a scripted fake LLM: dispatch, invalid arguments, unknown tools, step limit, append-only history.
-3. **Scenario evals** run against each provider: required/forbidden tools and must/must-not patterns in the final reply, covering catalog search, prices, promotions, availability, order status, identity failures, returns, warranty boundary, out-of-scope requests, empty categories, follow-ups, prompt injection and complaints. Reports compare Opus and the local model.
+3. **Scenario evals** run against each provider: required/forbidden tools and must/must-not patterns in the final reply, covering catalog search, prices, promotions, availability, order status, identity failures, returns, warranty boundary, out-of-scope requests, empty categories, follow-ups, prompt injection and complaints. Reports can compare local models (`--model`).
 4. **Example conversations** exported from real sessions with `/save`.

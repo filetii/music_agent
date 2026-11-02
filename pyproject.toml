@@ -9,7 +9,6 @@ description = "Customer-service agent prototype for Empório da Música (Artefac
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "anthropic>=2.3",
     "ollama>=0.6",
     "python-dotenv>=1.0",
     "rapidfuzz>=3.0",
