@@ -17,7 +17,7 @@ from typing import Callable
 
 from . import pricing
 from .data import Product, Store
-from .policies import SECTION_SUMMARIES
+from .policies import DEADLINES, SECTION_SUMMARIES
 from .pricing import brl
 
 log = logging.getLogger(__name__)
@@ -325,14 +325,27 @@ def get_order_status(ctx: ToolContext, args: dict) -> dict:
         },
     }
     if order.status == "delivered":
-        # Questions about delivered orders are almost always about returns, exchanges or warranty,
-        # and small models skip a separate get_policy call. Retrieval is guaranteed here; applying
-        # the rules is still left to the model, with the manual as the single source of truth.
+        # Questions about delivered orders are almost always about returns, exchanges or warranty.
+        # The deadline arithmetic is done here (the local model got it wrong); the policy text comes
+        # along so the model can explain conditions and next steps in the manual's own terms.
+        elapsed = {"receipt": data["facts"]["days_since_estimated_delivery"], "purchase": data["facts"]["days_since_order"]}
+        data["deadline_check"] = {
+            name: {
+                "limit_days": limit,
+                "counted_from": "recebimento (data estimada)" if anchor == "receipt" else "compra",
+                "days_elapsed": elapsed[anchor],
+                "within_deadline": elapsed[anchor] <= limit,
+            }
+            for name, limit, anchor, _, _ in DEADLINES
+        }
+        data["deadlines_still_open"] = [n for n, c in data["deadline_check"].items() if c["within_deadline"]]
+        data["deadlines_expired"] = [n for n, c in data["deadline_check"].items() if not c["within_deadline"]]
         data["policies_for_this_order"] = {s: ctx.policies[s] for s in ("returns_and_exchanges", "warranty")}
         data["how_to_apply"] = (
-            "Compare each deadline in these policies with the day counts in facts: "
-            "days_since_estimated_delivery for deadlines counted from receipt, days_since_order for deadlines "
-            "counted from purchase. Do not compute dates yourself."
+            "deadline_check says which deadlines are still open. Explain them with the policy text. When a deadline "
+            "has passed, tell the customer what is still open (deadlines_still_open) and what the policy says to do "
+            "next (e.g. manufacturer warranty, which the store can intermediate). Offer nothing the policy does not "
+            "mention. Do not compute dates."
         )
     return _envelope("ok", data=data)
 
@@ -435,8 +448,8 @@ def build_tools(store: Store) -> list[Tool]:
             "get_order_status",
             "Look up an order. Requires the order number AND the phone number registered on the order — "
             "ask the customer for both before calling. A mismatch returns not_found (never reveal whether the "
-            "order exists). Returns status, items, total, tracking code and date facts (days elapsed) used to "
-            "apply return, exchange and warranty policies.",
+            "order exists). Returns status, items, total and tracking code; for delivered orders also a deadline "
+            "check and the return/warranty policies to explain it.",
             {
                 "type": "object",
                 "properties": {
@@ -494,9 +507,17 @@ class ToolRegistry:
         tool = self.tools.get(name)
         if tool is None:
             return _envelope("error", f"Unknown tool '{name}'.")
+        # Small models misspell optional arguments (e.g. "include_unavailability"); rejecting the
+        # whole call made them give up, so unknown top-level arguments are dropped with a warning.
+        known = tool.input_schema.get("properties", {})
+        ignored = sorted(set(args) - set(known))
+        args = {k: v for k, v in args.items() if k in known}
         try:
             _validate(args, tool.input_schema)
-            return tool.handler(self.context, args)
+            result = tool.handler(self.context, args)
+            if ignored:
+                result["warning"] = f"Ignored unknown arguments {ignored}; valid arguments are {sorted(known)}."
+            return result
         except InvalidInput as e:
             return _envelope("invalid_input", str(e))
         except Exception:

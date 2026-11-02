@@ -6,7 +6,7 @@ from pypdf import PdfReader
 
 from emporio.config import PROJECT_ROOT
 from emporio.data import normalize
-from emporio.policies import SECTION_SUMMARIES, load_policies
+from emporio.policies import DEADLINES, SECTION_SUMMARIES, load_policies
 
 DATA = PROJECT_ROOT / "data"
 
@@ -51,3 +51,9 @@ def test_transcription_is_faithful_to_pdf():
 )
 def test_key_facts_in_expected_section(policies, section, fact):
     assert fact in policies[section]
+
+
+@pytest.mark.parametrize("name, limit, anchor, section, wording", DEADLINES)
+def test_coded_deadlines_still_match_the_manual(policies, name, limit, anchor, section, wording):
+    assert wording in policies[section], f"{name}: the manual no longer says '{wording}'"
+    assert str(limit) in wording

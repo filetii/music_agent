@@ -133,6 +133,18 @@ def test_quote_with_ambiguous_name_asks_which(registry):
     assert result["status"] == "ambiguous"
 
 
+def test_deadline_check_for_delivered_orders(registry):
+    checks = registry.run("get_order_status", {"order_id": 7, "phone": ORDER_7_PHONE})["data"]["deadline_check"]
+    assert checks["direito_de_arrependimento"] == {
+        "limit_days": 7, "counted_from": "recebimento (data estimada)", "days_elapsed": 36, "within_deadline": False,
+    }
+    assert checks["troca_por_defeito"]["within_deadline"] is False  # 50 days since purchase
+    assert checks["garantia_legal"]["within_deadline"] is True
+    boundary = registry.run("get_order_status", {"order_id": 4, "phone": "(67) 99812-3456"})["data"]["deadline_check"]
+    assert boundary["garantia_legal"]["days_elapsed"] == 93
+    assert boundary["garantia_legal"]["within_deadline"] is False
+
+
 def test_delivered_order_includes_return_and_warranty_policies(registry):
     data = registry.run("get_order_status", {"order_id": 7, "phone": ORDER_7_PHONE})["data"]
     assert set(data["policies_for_this_order"]) == {"returns_and_exchanges", "warranty"}
@@ -154,12 +166,18 @@ def test_get_policy_returns_requested_sections(registry):
         ("get_order_status", {"order_id": 8}),  # missing phone
         ("get_order_status", {"order_id": "8", "phone": ORDER_8_PHONE}),  # wrong type
         ("get_product_details", {"product_id": True}),  # bool is not an integer
-        ("search_products", {"category": "Violões", "color": "red"}),  # unknown field
         ("get_product_details", {}),  # neither id nor name
     ],
 )
 def test_invalid_input(registry, name, args):
     assert registry.run(name, args)["status"] == "invalid_input"
+
+
+def test_unknown_arguments_are_ignored_with_a_warning(registry):
+    result = registry.run("search_products", {"query": "Kala KA-ABP-CTG", "include_unavailability": True})
+    assert result["status"] == "ok"
+    assert "include_unavailability" in result["warning"]
+    assert result["data"]["products"][0]["product_id"] == 130
 
 
 def test_unknown_tool(registry):

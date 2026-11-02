@@ -32,8 +32,13 @@ GROUNDING_FEEDBACK = (
     "amounts that appear in no tool result or customer message of this conversation: {amounts}. Do not "
     "answer from memory: call the appropriate tool and answer again using only the values it returns."
 )
+STALL_FEEDBACK = (
+    "[Automatic check - this message comes from the system, not from the customer] You told the customer "
+    "you would check something, but called no tool. Call the appropriate tool now and answer with its result."
+)
 
 _AMOUNT = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{2}))?")
+_STALL = re.compile(r"\b(vou|vamos|deixa eu|irei) (verificar|consultar|checar|conferir)\b|\bum (momento|instante)\b", re.I)
 
 
 def _amounts(text: str) -> set[Decimal]:
@@ -52,6 +57,35 @@ def ungrounded_amounts(reply: str, history: list[Message]) -> set[Decimal]:
     return _amounts(reply) - evidence
 
 
+def guard_feedback(reply: str, history: list[Message]) -> str | None:
+    """Deterministic checks on a final reply; returns corrective feedback for the model, or None."""
+    unsupported = ungrounded_amounts(reply, history)
+    if unsupported:
+        return GROUNDING_FEEDBACK.format(amounts=", ".join(f"R$ {a}" for a in sorted(unsupported)))
+    if _STALL.search(reply):
+        return STALL_FEEDBACK
+    return None
+
+
+def unsupplied_identity(arguments: dict, history: list[Message]) -> str | None:
+    """Order lookups may only use an order number and phone the customer typed in this conversation.
+
+    Stops the model from inventing them (seen in testing) and from looking up orders with data the
+    customer never provided (e.g. prompted by an injection)."""
+    said = " ".join(
+        m.text for m in history if isinstance(m, UserMessage) and not m.text.startswith("[Automatic check")
+    )
+    order_ok = str(arguments.get("order_id")) in re.findall(r"\d+", said)
+    phone = re.sub(r"\D", "", str(arguments.get("phone", "")))
+    phone_ok = len(phone) >= 8 and phone[-8:] in re.sub(r"\D", "", said)
+    if order_ok and phone_ok:
+        return None
+    return (
+        "Use only the order number and phone the customer typed in this conversation. "
+        "If you do not have them, ask the customer."
+    )
+
+
 @dataclass
 class ToolTrace:
     name: str
@@ -64,7 +98,7 @@ class Reply:
     text: str
     tool_calls: list[ToolTrace] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
-    grounding_retries: int = 0
+    guard_retries: int = 0
 
 
 class Session:
@@ -92,15 +126,15 @@ class Session:
                     raise RuntimeError("model output hit max_tokens")
 
                 if not response.message.tool_calls:
-                    # Deterministic hallucination guard: every price must come from a tool or the customer.
-                    unsupported = ungrounded_amounts(response.message.text, self.history)
-                    if unsupported and reply.grounding_retries == 0:
-                        reply.grounding_retries += 1
-                        log.warning("ungrounded amounts %s; asking the model to use tools", unsupported)
-                        amounts = ", ".join(f"R$ {a}" for a in sorted(unsupported))
-                        self.history += [response.message, UserMessage(GROUNDING_FEEDBACK.format(amounts=amounts))]
+                    # Deterministic guard: prices must come from a tool or the customer, and the model
+                    # may not promise to "check" without calling a tool. One corrective retry, then fallback.
+                    feedback = guard_feedback(response.message.text, self.history)
+                    if feedback and reply.guard_retries == 0:
+                        reply.guard_retries += 1
+                        log.warning("guard triggered: %s", feedback)
+                        self.history += [response.message, UserMessage(feedback)]
                         continue
-                    if unsupported:
+                    if feedback:
                         return self._finish(reply, FALLBACK_REPLY)
                     self.history.append(response.message)
                     reply.text = response.message.text.strip()
@@ -109,7 +143,11 @@ class Session:
                 self.history.append(response.message)
                 results = []
                 for call in response.message.tool_calls:
-                    result = self.registry.run(call.name, call.arguments)
+                    problem = (
+                        unsupplied_identity(call.arguments, self.history) if call.name == "get_order_status" else None
+                    )
+                    result = {"status": "invalid_input", "message": problem} if problem else \
+                        self.registry.run(call.name, call.arguments)
                     log.info("tool %s %s -> %s", call.name, call.arguments, result["status"])
                     reply.tool_calls.append(ToolTrace(call.name, call.arguments, result))
                     results.append(ToolResult(

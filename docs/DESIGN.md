@@ -97,7 +97,7 @@ Four concerns had to be placed: structured lookups, policy retrieval, orchestrat
 | Framework | Thin custom layer (`LLMClient` protocol + Ollama adapter + ~50-line loop) | Every tool call visible; nothing to justify or fight; the protocol also lets tests drive the loop with a scripted fake model |
 | Data access | `csv` + dataclasses, validated at startup | 65 rows; no NaN/dtype surprises; typed and testable |
 | Price math | Deterministic code (`Decimal`) | Promotion vs PIX vs installments vs freight must never be LLM arithmetic |
-| Policy windows | Tools compute *facts* (days elapsed); the LLM applies the policy text | Keeps the manual as the single source of truth for rules |
+| Policy windows | Planned: tools compute *facts* (days elapsed) and the LLM applies the policy text. **Changed after evals** (§3.2): deadlines are checked in code | The plan kept the manual as the single source of truth; the local model could not apply it reliably |
 | Policy retrieval | Section lookup by id (C1) | Explicit, logged, testable; no embeddings |
 | Conversation | In-session, append-only history; no cross-session memory | Follow-ups need history; verified identity must not outlive the session |
 | Interface | CLI (`--debug`, `/save`) | Reproducible, zero UI dependencies; `/save` produces the example transcripts |
@@ -108,6 +108,10 @@ Four concerns had to be placed: structured lookups, policy retrieval, orchestrat
 ### 3.1 Change of plan: free models only
 
 The original plan paired the local model with a paid one (Anthropic `claude-opus-5-5`) and the first implementation had both adapters. The Anthropic API is billed separately from a Claude subscription, so the project was narrowed to free, local inference only: the paid adapter was removed (it remains in the git history) and the provider-neutral `LLMClient` seam was kept, so adding a hosted model later is a single new file.
+
+### 3.2 Change of plan: deadlines checked in code
+
+The agreed design left policy deadlines to the model: tools returned day counts and the model compared them with the manual. End-to-end evals showed the local 8B model getting this wrong in ways that matter: it told a customer whose order was delivered 36 days earlier that the 7-day *arrependimento* right still applied, and called an order 93 days after delivery still inside the 90-day legal warranty. Delivered-order lookups now return a `deadline_check` (days elapsed, limit, within/outside) for each deadline in the manual, and the model explains it using the policy text. To avoid the code silently drifting from the manual, each coded deadline quotes the manual's wording and a test fails if that wording disappears.
 
 ## 4. Detailed design
 

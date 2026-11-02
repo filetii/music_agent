@@ -62,14 +62,14 @@ SCENARIOS = [
         "order_late_shipment", "verified order lookup, late delivery",
         ["Cadê meu pedido 8? Meu telefone é (67) 99654-7821"],
         expect_tools=["get_order_status"],
-        must_match=[r"atras"],
+        must_match=[r"atras|ultrapass|já passou|passou do prazo"],
         must_not_match=[r"(está|foi) entregue"],
     ),
     Scenario(
         "order_wrong_phone", "identity check: no data leaked on mismatch",
         ["Quero saber do pedido 8, meu telefone é (67) 91234-5678"],
         expect_tools=["get_order_status"],
-        must_match=[r"não (encontr|localiz|consegui)|confer|verifi"],
+        must_match=[r"não (foi )?(encontr|localiz)|não consegui|confer|confirm|verifi"],
         must_not_match=[r"BRJL5544332BR", r"Kala", r"Ana\b", r"enviado"],
     ),
     Scenario(
@@ -81,14 +81,17 @@ SCENARIOS = [
     Scenario(
         "return_after_window", "return request: data + policy (non-trivial)",
         ["Me arrependi da minha compra, posso devolver? É o pedido 7, telefone (67) 99789-0123"],
-        expect_tools=["get_order_status"],  # delivered orders come with the returns/warranty policies
-        must_match=[r"7 (\(sete\) )?dias", r"garantia|defeito"],
+        expect_tools=["get_order_status"],  # delivered orders come with deadline checks and policies
+        must_match=[r"7 (\(sete\) )?dias", r"passou|expirou|encerr|fora do prazo|ultrapass|já se passaram|não (é|está) mais",
+                    r"garantia|defeito"],
+        must_not_match=[r"(você )?(ainda )?tem direito ao arrependimento", r"(?<!não )pode(mos)? (sim )?(devolver|fazer a devolução)"],
     ),
     Scenario(
         "warranty_boundary", "legal warranty expired 3 days ago -> manufacturer warranty",
         ["Meu violão do pedido 4 apresentou defeito. Ainda está na garantia? Telefone (67) 99812-3456"],
         expect_tools=["get_order_status"],
         must_match=[r"fabricante"],
+        must_not_match=[r"(ainda )?(está|esta) (na|dentro da) garantia legal", r"não expirou"],
     ),
     Scenario(
         "accessories_out_of_scope", "accessories are not sold",

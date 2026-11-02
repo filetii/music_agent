@@ -55,7 +55,7 @@ def run(model: str | None, only: set[str] | None) -> Path:
         failures = check(scenario, replies)
         tokens = sum(r.usage.get("input_tokens", 0) + r.usage.get("output_tokens", 0) for r in replies)
         tools = [t.name for r in replies for t in r.tool_calls]
-        retries = sum(r.grounding_retries for r in replies)
+        retries = sum(r.guard_retries for r in replies)
         rows.append((scenario, not failures, failures, tools, elapsed, tokens, retries))
         print(f"{'PASS' if not failures else 'FAIL'}  {scenario.id}  ({elapsed:.1f}s)  {'; '.join(failures)}", flush=True)
 
@@ -78,7 +78,7 @@ def run(model: str | None, only: set[str] | None) -> Path:
         f"Run: {datetime.now():%Y-%m-%d %H:%M} · Scenarios: {len(rows)} · **Passed: {passed}/{len(rows)}**",
         f" · Mean latency per scenario: {sum(r[4] for r in rows) / len(rows):.1f}s"
         f" · Tokens (in+out): {sum(r[5] for r in rows):,}"
-        f" · Grounding retries: {sum(r[6] for r in rows)}",
+        f" · Guard retries: {sum(r[6] for r in rows)}",
         "",
         "| Scenario | Capability | Result | Tools called | Latency | Failures |",
         "|---|---|---|---|---|---|",

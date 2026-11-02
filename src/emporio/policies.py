@@ -18,6 +18,18 @@ SECTION_SUMMARIES = {
     "final_provisions": "Scope of the manual; doubts about applying a policy go to management.",
 }
 
+# Deadlines from the manual that are checked in code: the local model misapplied them when
+# left to compare day counts itself. Each entry quotes the manual's wording, and a test fails
+# if that wording disappears from the section, so the code cannot silently drift from the manual.
+# (name, limit in days, counted from "receipt" or "purchase", section, wording in the manual)
+DEADLINES = [
+    ("direito_de_arrependimento", 7, "receipt", "returns_and_exchanges", "7 (sete) dias corridos após o recebimento"),
+    ("troca_por_defeito", 30, "purchase", "returns_and_exchanges", "30 (trinta) dias corridos após a compra"),
+    # The manual gives no starting point for preference exchanges; receipt is assumed (README).
+    ("troca_por_preferencia", 7, "receipt", "returns_and_exchanges", "são permitidas em até 7 dias"),
+    ("garantia_legal", 90, "receipt", "warranty", "90 (noventa) dias contra defeitos de fabricação, contados a partir da data de recebimento"),
+]
+
 _MARKER = re.compile(r"<!--\s*section:\s*([a-z_]+)\s*-->")
 
 

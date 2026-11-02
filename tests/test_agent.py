@@ -119,7 +119,7 @@ def test_ungrounded_price_triggers_one_corrective_retry(make_session):
     )
     reply = session.send("Quanto custa o Takamine GD20?")
     assert reply.text == "O Takamine GD20 custa R$ 2.199,00."
-    assert reply.grounding_retries == 1
+    assert reply.guard_retries == 1
     feedback = llm.seen[1][1][-1]
     assert isinstance(feedback, UserMessage) and "R$ 1999.00" in feedback.text
 
@@ -127,6 +127,28 @@ def test_ungrounded_price_triggers_one_corrective_retry(make_session):
 def test_repeated_ungrounded_price_falls_back(make_session):
     session, _ = make_session(answer("Custa R$ 1.999,00."), answer("Custa R$ 1.899,00."))
     assert session.send("Quanto custa o GD20?").text == FALLBACK_REPLY
+
+
+def test_announcing_a_lookup_without_calling_a_tool_is_corrected(make_session):
+    session, llm = make_session(
+        answer("Vou verificar a disponibilidade, um momento!"),
+        tool_call("get_product_details", name="Takamine GD20"),
+        answer("Temos 5 unidades do Takamine GD20."),
+    )
+    reply = session.send("Tem Takamine GD20?")
+    assert reply.text == "Temos 5 unidades do Takamine GD20."
+    assert reply.guard_retries == 1
+    assert "called no tool" in llm.seen[1][1][-1].text
+
+
+def test_order_lookup_needs_identity_typed_by_the_customer(make_session):
+    session, llm = make_session(
+        tool_call("get_order_status", order_id=123456, phone="(67) 98765-4321"),  # invented by the model
+        tool_call("get_order_status", order_id=7, phone="(67) 99789-0123"),
+        answer("Encontrei seu pedido."),
+    )
+    reply = session.send("Meu pedido é o 7, telefone 67 99789-0123. Chegou?")
+    assert [t.result["status"] for t in reply.tool_calls] == ["invalid_input", "ok"]
 
 
 def test_system_prompt_has_session_context_and_empty_categories(make_session):
