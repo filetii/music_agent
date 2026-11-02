@@ -27,18 +27,29 @@ REFUSAL_REPLY = (
     "seus pedidos ou as políticas da loja?"
 )
 FAILURE_REPLY = "Estou com uma instabilidade no momento. Pode mandar sua mensagem de novo, por favor?"
-GROUNDING_FEEDBACK = (
-    "[Automatic check - this message comes from the system, not from the customer] Your reply mentions "
-    "amounts that appear in no tool result or customer message of this conversation: {amounts}. Do not "
-    "answer from memory: call the appropriate tool and answer again using only the values it returns."
+CHECK_PREFIX = "[Automatic check - this message comes from the system, not from the customer] "
+GROUNDING_FEEDBACK = CHECK_PREFIX + (
+    "Your reply mentions amounts that appear in no tool result or customer message of this conversation: "
+    "{amounts}. Do not answer from memory: call the appropriate tool and answer again using only the values it returns."
 )
-STALL_FEEDBACK = (
-    "[Automatic check - this message comes from the system, not from the customer] You told the customer "
-    "you would check something, but called no tool. Call the appropriate tool now and answer with its result."
+STALL_FEEDBACK = CHECK_PREFIX + (
+    "You told the customer you would check something, but called no tool. "
+    "Call the appropriate tool now and answer with its result."
+)
+PROMOTION_FEEDBACK = CHECK_PREFIX + (
+    "You gave a promotional price without the original price and the discount percentage. The store manual "
+    "(§6.2) requires all three: rewrite your answer presenting it as \"{present_as}\"."
+)
+ALTERNATIVES_FEEDBACK = CHECK_PREFIX + (
+    "You told the customer a product is unavailable without suggesting alternatives. The store manual (§7.3) "
+    "requires suggesting similar available products: rewrite your answer listing the alternatives from the "
+    "tool result, with their prices."
 )
 
 _AMOUNT = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{2}))?")
 _STALL = re.compile(r"\b(vou|vamos|deixa eu|irei) (verificar|consultar|checar|conferir)\b|\bum (momento|instante)\b", re.I)
+_UNAVAILABLE = re.compile(r"esgotad|indispon|descontinuad|em breve|não (está|estão) à venda", re.I)
+_PROMOTION = re.compile(r"De (R\$ [\d.,]+) por (R\$ [\d.,]+)")
 
 
 def _amounts(text: str) -> set[Decimal]:
@@ -57,13 +68,49 @@ def ungrounded_amounts(reply: str, history: list[Message]) -> set[Decimal]:
     return _amounts(reply) - evidence
 
 
-def guard_feedback(reply: str, history: list[Message]) -> str | None:
-    """Deterministic checks on a final reply; returns corrective feedback for the model, or None."""
+def _turn_results(history: list[Message]) -> list[dict]:
+    """Tool results since the customer's last message."""
+    start = max(
+        i for i, m in enumerate(history) if isinstance(m, UserMessage) and not m.text.startswith(CHECK_PREFIX)
+    )
+    return [json.loads(r.content) for m in history[start:] if isinstance(m, ToolResultsMessage) for r in m.results]
+
+
+def _dicts(value):
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _dicts(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _dicts(item)
+
+
+def guard_feedback(reply: str, history: list[Message]) -> tuple[str, bool] | None:
+    """Deterministic checks on a final reply.
+
+    Returns (corrective feedback for the model, blocking) or None. Blocking problems (invented
+    prices, a promised lookup that never happened) must not reach the customer; the others are
+    the manual's presentation rules, worth one retry but not worth withholding a correct answer.
+    """
     unsupported = ungrounded_amounts(reply, history)
     if unsupported:
-        return GROUNDING_FEEDBACK.format(amounts=", ".join(f"R$ {a}" for a in sorted(unsupported)))
+        return GROUNDING_FEEDBACK.format(amounts=", ".join(f"R$ {a}" for a in sorted(unsupported))), True
     if _STALL.search(reply):
-        return STALL_FEEDBACK
+        return STALL_FEEDBACK, True
+
+    said = _amounts(reply)
+    results = list(_dicts(_turn_results(history)))
+    for item in results:
+        match = _PROMOTION.match(str(item.get("present_as", "")))
+        if match and _amounts(match.group(2)) <= said and not _amounts(match.group(1)) <= said:
+            return PROMOTION_FEEDBACK.format(present_as=item["present_as"]), False
+    if _UNAVAILABLE.search(reply):
+        alternative_prices = {
+            a for item in results for alt in item.get("alternatives") or [] for a in _amounts(json.dumps(alt))
+        }
+        if alternative_prices and not alternative_prices & said:
+            return ALTERNATIVES_FEEDBACK, False
     return None
 
 
@@ -73,7 +120,7 @@ def unsupplied_identity(arguments: dict, history: list[Message]) -> str | None:
     Stops the model from inventing them (seen in testing) and from looking up orders with data the
     customer never provided (e.g. prompted by an injection)."""
     said = " ".join(
-        m.text for m in history if isinstance(m, UserMessage) and not m.text.startswith("[Automatic check")
+        m.text for m in history if isinstance(m, UserMessage) and not m.text.startswith(CHECK_PREFIX)
     )
     order_ok = str(arguments.get("order_id")) in re.findall(r"\d+", said)
     phone = re.sub(r"\D", "", str(arguments.get("phone", "")))
@@ -126,15 +173,15 @@ class Session:
                     raise RuntimeError("model output hit max_tokens")
 
                 if not response.message.tool_calls:
-                    # Deterministic guard: prices must come from a tool or the customer, and the model
-                    # may not promise to "check" without calling a tool. One corrective retry, then fallback.
-                    feedback = guard_feedback(response.message.text, self.history)
-                    if feedback and reply.guard_retries == 0:
+                    # Deterministic guard (see guard_feedback): one corrective retry; if a blocking
+                    # problem persists, the customer gets the safe fallback instead.
+                    check = guard_feedback(response.message.text, self.history)
+                    if check and reply.guard_retries == 0:
                         reply.guard_retries += 1
-                        log.warning("guard triggered: %s", feedback)
-                        self.history += [response.message, UserMessage(feedback)]
+                        log.warning("guard triggered: %s", check[0])
+                        self.history += [response.message, UserMessage(check[0])]
                         continue
-                    if feedback:
+                    if check and check[1]:
                         return self._finish(reply, FALLBACK_REPLY)
                     self.history.append(response.message)
                     reply.text = response.message.text.strip()

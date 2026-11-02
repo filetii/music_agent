@@ -115,9 +115,10 @@ Prompt text alone was not enough for an 8B model, so the reliable fixes went int
 The first local test showed `qwen3:8b` answering a price question **without calling any tool** and inventing a price and a promotion. The agent now checks every final reply deterministically:
 
 - each `R$` amount must appear in a tool result or in the customer's own messages;
-- a reply that promises to look something up ("vou verificar… um momento") must not end the turn without a tool call — another failure the model showed.
+- a reply that promises to look something up ("vou verificar… um momento") must not end the turn without a tool call — another failure the model showed;
+- a promotional price must be shown with the original price and the percentage (manual §6.2), and a product reported as unavailable must come with the available alternatives and their prices (manual §7.3). Tools hand the model ready-made text for this ("De R$ 5.999,00 por R$ 5.519,08 (8% de desconto…)"), but the 8B model still dropped it about two times in three until this check was added.
 
-If a check fails, the model gets one corrective retry, and if it fails again the customer gets a safe fallback reply. Tool calls are checked too: an order lookup only runs with an order number and phone **the customer actually typed** in the conversation — the model once invented both in a follow-up, and the same check stops it from looking up orders with data the customer never provided (e.g. prompted by an injection). Related robustness choices: unknown tool arguments (the model misspelled `include_unavailable` once and gave up on the error) are dropped with a warning instead of rejecting the call, and a failed model call discards the unanswered turn so the customer can simply resend.
+If a check fails, the model gets one corrective retry. If an invented price or a stalled lookup persists, the customer gets a safe fallback reply; the two presentation rules never block an answer that is correct but incomplete. Tool calls are checked too: an order lookup only runs with an order number and phone **the customer actually typed** in the conversation — the model once invented both in a follow-up, and the same check stops it from looking up orders with data the customer never provided (e.g. prompted by an injection). Related robustness choices: unknown tool arguments (the model misspelled `include_unavailable` once and gave up on the error) are dropped with a warning instead of rejecting the call, and a failed model call discards the unanswered turn so the customer can simply resend.
 
 ### Conversation and memory
 
@@ -158,7 +159,7 @@ The data and the manual contain inconsistencies; each was handled explicitly rat
 
 **End-to-end scenarios** (`python -m evals.run`): 20 scripted conversations against the real model, each in a fresh session, checked mechanically — which tools must or must not be called and what the reply must or must not contain. They cover catalog search with filters, prices, promotions vs PIX, out-of-stock and coming-soon products, store information, order status, wrong phone, missing phone, returns after the window, the warranty boundary, accessories, off-topic questions, empty categories, follow-ups, two prompt-injection attempts, an expired campaign, a multi-item quote and a complaint.
 
-**Results with `qwen3:8b`** — final run: **18/20 passed**, ~19 s per scenario on a laptop RTX 4050 (6 GB), ~99k tokens for the whole suite ([report with transcripts](evals/reports/ollama_qwen3_8b.md)). How it got there — each step was driven by reading the failing transcripts ([baseline report](evals/reports/01-baseline-qwen3_8b.md)):
+**Results with `qwen3:8b`** — final run: **20/20 passed**, ~23 s per scenario on a laptop RTX 4050 (6 GB), ~108k tokens for the whole suite ([report with transcripts](evals/reports/ollama_qwen3_8b.md)). How it got there — each step was driven by reading the failing transcripts ([baseline report](evals/reports/01-baseline-qwen3_8b.md)):
 
 | Run | Passed | Main change before the run |
 |---|---|---|
@@ -167,9 +168,10 @@ The data and the manual contain inconsistencies; each was handled explicitly rat
 | 3 | 16/20 | Portuguese availability labels and explicit "nenhuma promoção ativa"; delivered orders return the returns/warranty policy; stricter Black Friday check; complaint scenario made two-turn |
 | 4 | 16/20 | Deadline checks moved into code; return/warranty checks tightened (they had passed a wrong answer) |
 | 5 | 17/20 | Unknown tool arguments ignored with a warning; guard against "vou verificar" with no tool call; deadline summary lists open/expired deadlines |
-| 6 | **18/20** | Order lookups only with an order number and phone the customer typed |
+| 6 | 18/20 | Order lookups only with an order number and phone the customer typed |
+| 7 | **20/20** | Ready-made promotion text + manual §6.2 check; alternatives attached to unavailable search results + manual §7.3 check (the two scenarios then passed 3 out of 3 targeted runs) |
 
-Some checks were also corrected along the way, in both directions: patterns that rejected correct answers were widened (e.g. "não foi encontrado", "6 parcelas"), and checks that accepted wrong answers were tightened (return and warranty scenarios). The two remaining failures are real but minor: the promotion answer gives the promotional price and the absence of a PIX discount but omits the original price (the manual asks for all three), and the out-of-stock answer offers alternatives instead of listing them. Runs vary: local generation is not perfectly deterministic, and a scenario can flip between runs.
+Some checks were also corrected along the way, in both directions: patterns that rejected correct answers were widened (e.g. "não foi encontrado", "6 parcelas"), and checks that accepted wrong answers were tightened (return and warranty scenarios). Runs vary: local generation is not perfectly deterministic, so 20/20 in one run does not mean every scenario passes every time — earlier runs showed individual scenarios flipping between pass and fail.
 
 ---
 
@@ -182,7 +184,7 @@ Recorded with [scripts/record_examples.py](scripts/record_examples.py): scripted
 | [01 — violões até R$1000](examples/01-catalogo-violoes-ate-1000.md) | Catalog search with filters, then a recommendation from the previous results |
 | [02 — preço e promoção](examples/02-preco-e-promocao.md) | Price lookup, PIX price, installments; an active promotion that does not stack with PIX |
 | [03 — devolução de pedido](examples/03-devolucao-pedido.md) | **Non-trivial:** identity check, order data + policy deadlines → return right expired, legal warranty still open |
-| [04 — pedido atrasado](examples/04-pedido-atrasado.md) | The **safe-fallback path**: in this recording the model twice promised to "check" something without calling a tool, so the reply guard replaced its answer with the fallback offer to escalate; the second turn escalates with a protocol number. (Late-order detection itself passes in the evals.) |
+| [04 — pedido atrasado](examples/04-pedido-atrasado.md) | Late shipment detected from order data (25 days past the estimate), then escalation with a protocol number |
 | [05 — loja e fora de escopo](examples/05-loja-e-fora-de-escopo.md) | Address and hours from the policy manual, accessories declined, a discount prompt-injection refused |
 
 The evaluation reports in [evals/reports/](evals/reports/) contain 20 more transcripts, including the failures.
@@ -191,7 +193,7 @@ The evaluation reports in [evals/reports/](evals/reports/) contain 20 more trans
 
 ## Known limitations and what I would do with more time
 
-- **Small local model.** `qwen3:8b` sometimes skips a needed tool, ignores a tool result field, or adds facts the tools did not return. The grounding guard catches invented prices, but not every kind of invention. With more time: evaluate larger local models (e.g. `qwen3:14b` on a bigger GPU) or a hosted model behind the same `LLMClient` seam, and extend the guard (e.g. availability and promotion claims).
+- **Small local model.** `qwen3:8b` sometimes skips a needed tool, ignores a tool result field, or adds facts the tools did not return. The reply checks catch invented prices and the failure modes seen in testing, but not every kind of invention (e.g. a made-up recommendation to "contact the carrier"). With more time: evaluate larger local models (e.g. `qwen3:14b` on a bigger GPU) or a hosted model behind the same `LLMClient` seam, and keep turning observed failure modes into checks.
 - **Evals are small and single-run.** 20 scenarios with regex checks; local generation is not perfectly deterministic, so one run is a noisy estimate. Next: several runs per scenario, more paraphrases, and an LLM-as-judge for tone and faithfulness.
 - **No authentication.** Order lookups require order number + phone, which is reasonable for a chat prototype but not real authentication.
 - **Escalation is a local file.** `handoffs.jsonl` stands in for a ticketing system.
@@ -208,7 +210,7 @@ I built this project with **Claude Code** (Anthropic's agentic coding assistant,
 2. **Architecture.** I asked for at least three alternatives compared on reliability, cost, complexity and fit, without picking one early. We compared seven ([DESIGN.md §2](docs/DESIGN.md#2-architecture-alternatives)) and I chose the hybrid "deterministic tools + policy section lookup" design, no framework.
 3. **Design.** Tool interfaces, data treatment, prompt structure, repository layout and test strategy were agreed and committed as [docs/DESIGN.md](docs/DESIGN.md) before implementation.
 4. **Implementation in small commits.** Claude wrote the code and tests stage by stage (data → pricing → policies → tools → LLM layer → agent → evals); I reviewed each stage. Commits made with the assistant carry a `Co-Authored-By: Claude` trailer.
-5. **Evaluation-driven iteration.** Claude built the scenario harness, ran it against the local model and diagnosed failures from the transcripts; we fixed them mostly in tool design rather than prompt text (11/20 → see [Evaluation](#evaluation)).
+5. **Evaluation-driven iteration.** Claude built the scenario harness, ran it against the local model and diagnosed failures from the transcripts; we fixed them mostly in tool design rather than prompt text (11/20 → 20/20, see [Evaluation](#evaluation)).
 
 **Decisions that were mine:** the reference date, the architecture, keeping price math in code, the free-only switch (after learning the API is billed separately from my Claude subscription), committing only the customer data the agent needs, and moving deadline checks into code once the evals showed the local model could not apply them reliably.
 

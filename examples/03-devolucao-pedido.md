@@ -2,7 +2,7 @@
 
 - Model: `ollama:qwen3:8b`
 - Reference date: 25/03/2026
-- Saved: 2026-11-02 11:48
+- Saved: 2026-11-02 12:27
 
 **Cliente:** Oi, me arrependi da minha compra. Posso devolver meu pedido?
 
@@ -12,16 +12,18 @@
 
 > tool: `get_order_status({"order_id": 7, "phone": "(67) 99789-0123"}) -> ok`
 
-**Assistente:** Olá, Letícia! Sua compra do *Shelby SU-21S Soprano Sunburst* foi entregue em 17/02/2026, e já passaram 36 dias da data estimada de recebimento. 
+**Assistente:** Letícia, seu pedido está entregue, e infelizmente o prazo para devolução (7 dias corridos após o recebimento) já passou. No entanto, ainda está dentro do prazo para garantia legal (90 dias a partir do recebimento), que cobre defeitos de fabricação.
 
-Infelizmente, o prazo de 7 dias para devolução (direito de arrependimento) já expirou. No entanto, você ainda tem direito à **garantia legal de 90 dias**, que cobre defeitos de fabricação. Se o instrumento apresentar algum problema, pode solicitar a troca ou reparo com a garantia legal, que é válida a partir da data de recebimento (estimada).
+Se o instrumento estiver com algum defeito, você pode solicitar a troca ou reparo por meio da garantia legal. A Empório da Música pode intermediar o processo com o fabricante, caso deseje.
 
-Se quiser, posso ajudar a verificar se há algum defeito ou orientar sobre a garantia. Precisa de algo mais?
+Se quiser, posso ajudar a verificar se há algum problema com o produto. Como está tudo?
 
 **Cliente:** E se ele estiver com defeito, o que eu faço?
 
-**Assistente:** Se o instrumento estiver com defeito, você pode solicitar a **troca por defeito** ou o **reparo**, já que o prazo da garantia legal ainda está válido (até 90 dias a partir da data de recebimento estimada).
+> tool: `get_policy({"sections": ["warranty"]}) -> ok`
 
-Para isso, basta nos informar que o produto apresenta algum problema, e vamos orientar você sobre o processo. Se necessário, podemos intermediar a solicitação à fabricante, que é responsável pela garantia do produto.
+**Assistente:** A garantia legal cobre defeitos de fabricação durante os primeiros 90 dias após o recebimento do instrumento. Se o defeito for confirmado, você pode solicitar a troca ou reparo.
 
-Precisa que eu ajude a verificar o defeito ou orientar sobre o procedimento? 😊
+Se o instrumento for entregue e você perceber o defeito, é importante nos informar o número do pedido e o telefone cadastrado para verificar o status e orientar sobre a próxima etapa. 😊
+
+Precisa de ajuda com isso?

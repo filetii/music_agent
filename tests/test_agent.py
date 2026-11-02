@@ -141,6 +141,37 @@ def test_announcing_a_lookup_without_calling_a_tool_is_corrected(make_session):
     assert "called no tool" in llm.seen[1][1][-1].text
 
 
+def test_promotional_price_without_original_price_is_corrected(make_session):
+    session, llm = make_session(
+        tool_call("get_product_details", product_id=94),
+        answer("O Taylor 110e sai por R$ 5.519,08."),
+        answer("De R$ 5.999,00 por R$ 5.519,08 (8% de desconto - Desconto Exclusivo)."),
+    )
+    reply = session.send("Quanto custa o Taylor 110e?")
+    assert reply.text.startswith("De R$ 5.999,00 por R$ 5.519,08")
+    assert "De R$ 5.999,00 por R$ 5.519,08" in llm.seen[2][1][-1].text  # feedback quotes present_as
+
+
+def test_presentation_rules_never_withhold_a_correct_answer(make_session):
+    session, _ = make_session(
+        tool_call("get_product_details", product_id=94),
+        answer("Sai por R$ 5.519,08."),
+        answer("Sai por R$ 5.519,08 no PIX."),  # still incomplete after the retry
+    )
+    assert session.send("Quanto custa o Taylor 110e?").text == "Sai por R$ 5.519,08 no PIX."
+
+
+def test_unavailable_product_without_alternatives_is_corrected(make_session):
+    session, llm = make_session(
+        tool_call("search_products", query="Giannini GF-3D"),
+        answer("O Giannini GF-3D está esgotado no momento."),
+        answer("Está esgotado, mas temos o Shelby SGD-195E por R$ 799,00."),
+    )
+    reply = session.send("Tem o Giannini GF-3D?")
+    assert reply.text.endswith("R$ 799,00.")
+    assert "§7.3" in llm.seen[2][1][-1].text
+
+
 def test_order_lookup_needs_identity_typed_by_the_customer(make_session):
     session, llm = make_session(
         tool_call("get_order_status", order_id=123456, phone="(67) 98765-4321"),  # invented by the model

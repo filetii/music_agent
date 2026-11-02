@@ -101,6 +101,15 @@ def _validate(value, schema: dict, path: str = "input") -> None:
 # --- serialization helpers -----------------------------------------------------------
 
 
+def _promotion_text(price: pricing.UnitPrice) -> str:
+    """Manual §6.2: promotional prices always shown with the original price and the percentage.
+    Ready-made text, because the local model kept dropping the original price."""
+    return (
+        f"De {brl(price.list_price)} por {brl(price.promotional_price)} "
+        f"({price.promotion.discount_percent}% de desconto - {price.promotion.campaign})"
+    )
+
+
 def _price_block(ctx: ToolContext, product: Product) -> dict:
     price = pricing.unit_price(product, ctx.store.promotions.get(product.id))
     block = {"list_price": brl(price.list_price)}
@@ -109,6 +118,7 @@ def _price_block(ctx: ToolContext, product: Product) -> dict:
             "campaign": price.promotion.campaign,
             "discount_percent": price.promotion.discount_percent,
             "promotional_price": brl(price.promotional_price),
+            "present_as": _promotion_text(price),
         }
         block["pix_price"] = None
         block["note"] = "Promotions are not cumulative: no extra PIX discount on the promotional price."
@@ -199,13 +209,20 @@ def search_products(ctx: ToolContext, args: dict) -> dict:
             "set include_unavailable=true to also see out-of-stock/discontinued items.",
         )
     limit = args.get("limit", 8)
+    shown = []
+    for product in products[:limit]:
+        summary = _summary(ctx, product)
+        if product.availability != "available":
+            # Manual §7.3: an unavailable product comes with similar available alternatives.
+            summary["alternatives"] = [_summary(ctx, p) for p in ctx.store.alternatives(product)]
+        shown.append(summary)
     return _envelope(
         "ok",
         data={
             "total_found": len(products),
-            "shown": min(limit, len(products)),
+            "shown": len(shown),
             "price_filters_use": "list price",
-            "products": [_summary(ctx, p) for p in products[:limit]],
+            "products": shown,
         },
     )
 
@@ -257,7 +274,8 @@ def quote_purchase(ctx: ToolContext, args: dict) -> dict:
                 "quantity": l.quantity,
                 "list_unit_price": brl(l.price.list_price),
                 "promotion": (
-                    {"campaign": l.price.promotion.campaign, "discount_percent": l.price.promotion.discount_percent}
+                    {"campaign": l.price.promotion.campaign, "discount_percent": l.price.promotion.discount_percent,
+                     "present_as": _promotion_text(l.price)}
                     if l.price.promotion else None
                 ),
                 "unit_price_charged": brl(l.unit_charged),

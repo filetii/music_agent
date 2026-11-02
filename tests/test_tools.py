@@ -28,9 +28,11 @@ def test_search_with_category_and_price(registry):
     assert result["data"]["total_found"] == 12
 
 
-def test_name_search_includes_unavailable_matches(registry):
+def test_name_search_includes_unavailable_matches_with_alternatives(registry):
     products = registry.run("search_products", {"query": "Giannini GF-3D"})["data"]["products"]
     assert products[0]["product_id"] == 96 and products[0]["availability"] == "out_of_stock"
+    alternatives = products[0]["alternatives"]
+    assert alternatives and all(a["availability"] == "available" for a in alternatives)
     browsing = registry.run("search_products", {"category": "Violões", "limit": 20})["data"]["products"]
     assert all(p["availability"] == "available" for p in browsing)
 
@@ -52,7 +54,10 @@ def test_product_price_without_promotion(registry):
 
 def test_product_with_active_promotion(registry):
     price = registry.run("get_product_details", {"product_id": 94})["data"]["price"]
-    assert price["promotion"] == {"campaign": "Desconto Exclusivo", "discount_percent": 8, "promotional_price": "R$ 5.519,08"}
+    assert price["promotion"] == {
+        "campaign": "Desconto Exclusivo", "discount_percent": 8, "promotional_price": "R$ 5.519,08",
+        "present_as": "De R$ 5.999,00 por R$ 5.519,08 (8% de desconto - Desconto Exclusivo)",
+    }
     assert price["pix_price"] is None
 
 
@@ -126,6 +131,14 @@ def test_quote_accepts_product_names(registry):
          "payment_method": "pix", "delivery_city": "Campo Grande"},
     )["data"]
     assert data["total"] == "R$ 759,82"
+
+
+def test_quote_presents_promotion_with_original_price(registry):
+    item = registry.run(
+        "quote_purchase", {"items": [{"name": "Taylor 110e", "quantity": 1}], "payment_method": "pix"},
+    )["data"]["items"][0]
+    assert item["promotion"]["present_as"].startswith("De R$ 5.999,00 por R$ 5.519,08")
+    assert item["unit_price_charged"] == "R$ 5.519,08"
 
 
 def test_quote_with_ambiguous_name_asks_which(registry):
