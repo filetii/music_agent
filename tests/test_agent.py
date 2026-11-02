@@ -134,4 +134,4 @@ def test_system_prompt_has_session_context_and_empty_categories(make_session):
     session.send("Oi")
     system = llm.seen[0][0]
     assert "quarta-feira, 25/03/2026, 10:00" in system
-    assert "Instrumentos de Sopro (Madeiras)" in system.split("currently have no products:")[1]
+    assert "Instrumentos de Sopro (Madeiras)" in system.split("NO products at all in these categories:")[1]

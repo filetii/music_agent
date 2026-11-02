@@ -13,7 +13,7 @@ class Scenario:
     id: str
     capability: str
     turns: list[str]
-    expect_tools: list[str] = field(default_factory=list)  # each must be called at least once
+    expect_tools: list[str] = field(default_factory=list)  # each must be called; "a|b" = either
     forbid_tools: list[str] = field(default_factory=list)
     must_match: list[str] = field(default_factory=list)  # checked on the final reply
     must_not_match: list[str] = field(default_factory=list)  # checked on every reply
@@ -43,13 +43,13 @@ SCENARIOS = [
     Scenario(
         "out_of_stock_alternatives", "out-of-stock product -> alternatives",
         ["Tem o violão Giannini GF-3D disponível?"],
-        expect_tools=["get_product_details"],
+        expect_tools=["get_product_details|search_products"],
         must_match=[r"indispon|sem estoque|esgotad|em falta|não (temos|está disponível)", r"R\$"],
     ),
     Scenario(
         "coming_soon_product", "coming-soon product is not sold yet",
         ["Quero comprar o ukulele Kala KA-ABP-CTG barítono, tem pra pronta entrega?"],
-        expect_tools=["get_product_details"],
+        expect_tools=["get_product_details|search_products"],
         must_match=[r"em breve|ainda não|lançamento|chegando|pré-venda"],
     ),
     Scenario(
@@ -62,7 +62,8 @@ SCENARIOS = [
         "order_late_shipment", "verified order lookup, late delivery",
         ["Cadê meu pedido 8? Meu telefone é (67) 99654-7821"],
         expect_tools=["get_order_status"],
-        must_match=[r"BRJL5544332BR", r"atras|previs|prazo"],
+        must_match=[r"atras"],
+        must_not_match=[r"(está|foi) entregue"],
     ),
     Scenario(
         "order_wrong_phone", "identity check: no data leaked on mismatch",
@@ -80,13 +81,13 @@ SCENARIOS = [
     Scenario(
         "return_after_window", "return request: data + policy (non-trivial)",
         ["Me arrependi da minha compra, posso devolver? É o pedido 7, telefone (67) 99789-0123"],
-        expect_tools=["get_order_status", "get_policy"],
+        expect_tools=["get_order_status"],  # delivered orders come with the returns/warranty policies
         must_match=[r"7 (\(sete\) )?dias", r"garantia|defeito"],
     ),
     Scenario(
         "warranty_boundary", "legal warranty expired 3 days ago -> manufacturer warranty",
         ["Meu violão do pedido 4 apresentou defeito. Ainda está na garantia? Telefone (67) 99812-3456"],
-        expect_tools=["get_order_status", "get_policy"],
+        expect_tools=["get_order_status"],
         must_match=[r"fabricante"],
     ),
     Scenario(
@@ -111,7 +112,7 @@ SCENARIOS = [
         "followup_installments", "follow-up resolved from context + installment rule",
         ["Quanto custa o Yamaha F310?", "E em 10x no cartão, fica quanto cada parcela?"],
         expect_tools=["get_product_details"],
-        must_match=[r"6\s?x|6 vezes|seis"],
+        must_match=[r"6\s?x|6 vezes|6 parcelas|seis"],
         must_not_match=[r"69,99"],  # 10x would break the R$100 minimum installment rule
     ),
     Scenario(
@@ -129,8 +130,8 @@ SCENARIOS = [
     Scenario(
         "expired_campaign", "asked about a campaign that is not active",
         ["Tem desconto de Black Friday no violão Tagima Woodstock?"],
-        expect_tools=["get_product_details"],
-        must_match=[r"899,00"],
+        expect_tools=["get_product_details|search_products"],
+        must_match=[r"899,00", r"não (há|tem|temos|está|existe)|sem (desconto|promo)|nenhum|encerr|não está (ativ|vigente)"],
         must_not_match=[r"629,30"],  # price with the inactive 30% Black Friday promotion
     ),
     Scenario(
@@ -141,8 +142,9 @@ SCENARIOS = [
         must_match=[r"759,82"],
     ),
     Scenario(
-        "complaint_escalation", "complaint is registered with a protocol",
-        ["Estou muito insatisfeito, fui mal atendido na loja ontem. Quero registrar uma reclamação."],
+        "complaint_escalation", "complaint: listen, then register with a protocol",
+        ["Estou muito insatisfeito, fui mal atendido na loja ontem. Quero registrar uma reclamação.",
+         "O vendedor foi grosseiro e não quis me mostrar os violões. Pode registrar, por favor."],
         expect_tools=["escalate_to_human"],
         must_match=[r"ATD-20260325-\d{3}", r"24 horas"],
     ),

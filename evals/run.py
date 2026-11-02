@@ -25,7 +25,9 @@ NOW = datetime(2026, 3, 25, 10, 0)  # a Wednesday morning: store open, determini
 def check(scenario: Scenario, replies) -> list[str]:
     failures = []
     called = {t.name for r in replies for t in r.tool_calls}
-    failures += [f"tool not called: {t}" for t in scenario.expect_tools if t not in called]
+    failures += [
+        f"tool not called: {t}" for t in scenario.expect_tools if not any(alt in called for alt in t.split("|"))
+    ]
     failures += [f"forbidden tool called: {t}" for t in scenario.forbid_tools if t in called]
     final = replies[-1].text
     failures += [f"missing /{p}/" for p in scenario.must_match if not re.search(p, final, re.IGNORECASE)]

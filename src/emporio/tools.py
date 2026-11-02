@@ -29,6 +29,12 @@ ORDER_STATUS_LABELS = {
     "delivered": "entregue",
     "cancelled": "cancelado",
 }
+AVAILABILITY_LABELS = {
+    "available": "disponível",
+    "out_of_stock": "esgotado - não pode ser comprado agora",
+    "discontinued": "descontinuado - não faz mais parte do catálogo",
+    "coming_soon": "em breve - ainda não está à venda",
+}
 ESCALATION_REASONS = ["complaint", "order_issue", "return_or_warranty", "policy_question", "customer_request"]
 
 
@@ -107,6 +113,7 @@ def _price_block(ctx: ToolContext, product: Product) -> dict:
         block["pix_price"] = None
         block["note"] = "Promotions are not cumulative: no extra PIX discount on the promotional price."
     else:
+        block["promotion"] = "nenhuma promoção ativa"
         block["pix_price"] = brl(price.pix_price)
     return block
 
@@ -117,6 +124,7 @@ def _summary(ctx: ToolContext, product: Product) -> dict:
         "name": product.name,
         "category": ctx.store.categories[product.category_id].name,
         "availability": product.availability,
+        "availability_label": AVAILABILITY_LABELS[product.availability],
         "price": _price_block(ctx, product),
     }
     if product.availability == "available":
@@ -180,7 +188,9 @@ def search_products(ctx: ToolContext, args: dict) -> dict:
         max_price=Decimal(str(args["max_price"])) if "max_price" in args else None,
         string_type=args.get("string_type"),
         electric=args.get("electric"),
-        include_unavailable=args.get("include_unavailable", False),
+        # A customer naming a product must hear its real status, so name searches include
+        # unavailable matches (flagged); browsing without a query shows only what can be bought.
+        include_unavailable=args.get("include_unavailable", "query" in args),
     )
     if not products:
         return _envelope(
@@ -200,32 +210,38 @@ def search_products(ctx: ToolContext, args: dict) -> dict:
     )
 
 
-def get_product_details(ctx: ToolContext, args: dict) -> dict:
-    if "product_id" in args:
-        product = ctx.store.products.get(args["product_id"])
+def _find_product(ctx: ToolContext, ref: dict) -> tuple[Product | None, dict | None]:
+    """Resolve {"product_id"} or {"name"} to a product, or return the envelope explaining why not."""
+    if "product_id" in ref:
+        product = ctx.store.products.get(ref["product_id"])
         if not product:
-            return _envelope("not_found", f"There is no product with id {args['product_id']}.")
-        return _envelope("ok", data=_details(ctx, product))
-    if "name" not in args:
+            return None, _envelope("not_found", f"There is no product with id {ref['product_id']}.")
+        return product, None
+    if "name" not in ref:
         raise InvalidInput("provide product_id or name")
-    matches = ctx.store.resolve_product(args["name"])
+    matches = ctx.store.resolve_product(ref["name"])
     if not matches:
-        return _envelope("not_found", f"No product in the catalog matches '{args['name']}'.")
+        return None, _envelope("not_found", f"No product in the catalog matches '{ref['name']}'.")
     if len(matches) > 1:
-        return _envelope(
+        return None, _envelope(
             "ambiguous",
-            "Several products match; ask the customer which one they mean.",
+            f"Several products match '{ref['name']}'; ask the customer which one they mean.",
             data={"candidates": [_summary(ctx, p) for p in matches]},
         )
-    return _envelope("ok", data=_details(ctx, matches[0]))
+    return matches[0], None
+
+
+def get_product_details(ctx: ToolContext, args: dict) -> dict:
+    product, problem = _find_product(ctx, args)
+    return problem or _envelope("ok", data=_details(ctx, product))
 
 
 def quote_purchase(ctx: ToolContext, args: dict) -> dict:
     lines = []
     for item in args["items"]:
-        product = ctx.store.products.get(item["product_id"])
-        if not product:
-            return _envelope("not_found", f"There is no product with id {item['product_id']}.")
+        product, problem = _find_product(ctx, item)
+        if problem:
+            return problem
         if product.availability != "available":
             raise InvalidInput(f"{product.name} cannot be purchased right now (availability: {product.availability})")
         if item["quantity"] > product.stock:
@@ -308,6 +324,16 @@ def get_order_status(ctx: ToolContext, args: dict) -> dict:
             ),
         },
     }
+    if order.status == "delivered":
+        # Questions about delivered orders are almost always about returns, exchanges or warranty,
+        # and small models skip a separate get_policy call. Retrieval is guaranteed here; applying
+        # the rules is still left to the model, with the manual as the single source of truth.
+        data["policies_for_this_order"] = {s: ctx.policies[s] for s in ("returns_and_exchanges", "warranty")}
+        data["how_to_apply"] = (
+            "Compare each deadline in these policies with the day counts in facts: "
+            "days_since_estimated_delivery for deadlines counted from receipt, days_since_order for deadlines "
+            "counted from purchase. Do not compute dates yourself."
+        )
     return _envelope("ok", data=data)
 
 
@@ -337,7 +363,8 @@ def build_tools(store: Store) -> list[Tool]:
             "search_products",
             "Search the store catalog. Use it to browse or recommend products and to answer which products "
             "exist in a category, price range, string type (nylon/steel) or with a pickup (eletroacústico). "
-            "By default only products available for purchase are returned. Price filters use the list price. "
+            "Without a query only products available for purchase are returned; with a query, unavailable "
+            "matches are included and flagged in 'availability'. Price filters use the list price. "
             "For a specific model the customer names, prefer get_product_details.",
             {
                 "type": "object",
@@ -385,10 +412,13 @@ def build_tools(store: Store) -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "product_id": {"type": "integer"},
+                                "product_id": {"type": "integer",
+                                               "description": "Only an id returned by another tool."},
+                                "name": {"type": "string",
+                                         "description": "The product name as the customer said it (instead of product_id)."},
                                 "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
                             },
-                            "required": ["product_id", "quantity"],
+                            "required": ["quantity"],
                         },
                     },
                     "payment_method": {"type": "string", "enum": list(pricing.PAYMENT_METHODS)},

@@ -28,6 +28,13 @@ def test_search_with_category_and_price(registry):
     assert result["data"]["total_found"] == 12
 
 
+def test_name_search_includes_unavailable_matches(registry):
+    products = registry.run("search_products", {"query": "Giannini GF-3D"})["data"]["products"]
+    assert products[0]["product_id"] == 96 and products[0]["availability"] == "out_of_stock"
+    browsing = registry.run("search_products", {"category": "Violões", "limit": 20})["data"]["products"]
+    assert all(p["availability"] == "available" for p in browsing)
+
+
 def test_search_empty_category_says_so(registry):
     result = registry.run("search_products", {"category": "Instrumentos de Sopro (Madeiras)"})
     assert result["status"] == "not_found"
@@ -39,7 +46,7 @@ def test_product_price_without_promotion(registry):
     assert data["product_id"] == 95
     assert data["price"]["list_price"] == "R$ 2.199,00"
     assert data["price"]["pix_price"] == "R$ 2.089,05"
-    assert "promotion" not in data["price"]
+    assert data["price"]["promotion"] == "nenhuma promoção ativa"
     assert data["price"]["credit_card"] == {"max_interest_free_installments": 12, "installment_value": "R$ 183,25"}
 
 
@@ -52,6 +59,7 @@ def test_product_with_active_promotion(registry):
 def test_out_of_stock_product_has_alternatives(registry):
     data = registry.run("get_product_details", {"product_id": 96})["data"]
     assert data["availability"] == "out_of_stock"
+    assert data["availability_label"].startswith("esgotado")
     assert "stock" not in data
     assert data["alternatives"]
 
@@ -109,6 +117,28 @@ def test_quote_with_campo_grande_delivery(registry):
     assert data["shipping"]["fee"] == "R$ 35,00"
     assert data["total"] == "R$ 464,90"
     assert data["payment"]["installment_value"] == "R$ 154,97"
+
+
+def test_quote_accepts_product_names(registry):
+    data = registry.run(
+        "quote_purchase",
+        {"items": [{"name": "Yamaha C40", "quantity": 1}, {"name": "Kala KA-15S", "quantity": 1}],
+         "payment_method": "pix", "delivery_city": "Campo Grande"},
+    )["data"]
+    assert data["total"] == "R$ 759,82"
+
+
+def test_quote_with_ambiguous_name_asks_which(registry):
+    result = registry.run("quote_purchase", {"items": [{"name": "Taylor", "quantity": 1}], "payment_method": "pix"})
+    assert result["status"] == "ambiguous"
+
+
+def test_delivered_order_includes_return_and_warranty_policies(registry):
+    data = registry.run("get_order_status", {"order_id": 7, "phone": ORDER_7_PHONE})["data"]
+    assert set(data["policies_for_this_order"]) == {"returns_and_exchanges", "warranty"}
+    assert "7 (sete) dias" in data["policies_for_this_order"]["returns_and_exchanges"]
+    shipped = registry.run("get_order_status", {"order_id": 8, "phone": ORDER_8_PHONE})["data"]
+    assert "policies_for_this_order" not in shipped
 
 
 def test_get_policy_returns_requested_sections(registry):
