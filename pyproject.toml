@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pypdf>=5"]
+ui = ["streamlit>=1.40"]
 
 [project.scripts]
 emporio = "emporio.cli:main"
