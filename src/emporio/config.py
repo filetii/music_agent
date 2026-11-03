@@ -16,6 +16,7 @@ class Settings:
     ollama_model: str
     ollama_host: str
     ollama_num_ctx: int
+    ollama_think: bool
     reference_date: date
     max_tool_steps: int
     data_dir: Path
@@ -28,6 +29,7 @@ def load_settings() -> Settings:
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
         ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
+        ollama_think=os.getenv("OLLAMA_THINK", "false").lower() == "true",
         reference_date=date.fromisoformat(os.getenv("REFERENCE_DATE", "2026-03-25")),
         max_tool_steps=int(os.getenv("MAX_TOOL_STEPS", "6")),
         data_dir=PROJECT_ROOT / "data",

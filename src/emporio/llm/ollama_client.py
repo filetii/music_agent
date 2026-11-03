@@ -12,10 +12,11 @@ CHARS_PER_TOKEN = 3  # rough estimate, conservative for Portuguese text and JSON
 
 
 class OllamaClient:
-    def __init__(self, model: str, host: str, num_ctx: int):
-        self.name = f"ollama:{model}"
+    def __init__(self, model: str, host: str, num_ctx: int, think: bool = False):
+        self.name = f"ollama:{model}" + ("+think" if think else "")
         self.model = model
         self.num_ctx = num_ctx
+        self.think = think
         self.client = ollama.Client(host=host)
 
     def complete(self, system: str, tools: list[Tool], history: list[Message]) -> LLMResponse:
@@ -32,7 +33,9 @@ class OllamaClient:
             model=self.model,
             messages=[{"role": "system", "content": system}, *to_ollama_messages(history)],
             tools=tool_specs,
-            think=False,  # Qwen3's thinking mode adds latency without helping tool selection here
+            # Off by default: for qwen3:8b thinking adds latency without helping tool selection. Smaller
+            # qwen3 models need it (1.7b stops calling tools without it; see the benchmark).
+            think=self.think,
             options={"num_ctx": self.num_ctx, "temperature": 0.2},
         )
         message = response.message
