@@ -100,7 +100,8 @@ Four concerns had to be placed: structured lookups, policy retrieval, orchestrat
 | Policy windows | Planned: tools compute *facts* (days elapsed) and the LLM applies the policy text. **Changed after evals** (§3.2): deadlines are checked in code | The plan kept the manual as the single source of truth; the local model could not apply it reliably |
 | Policy retrieval | Section lookup by id (C1) | Explicit, logged, testable; no embeddings |
 | Conversation | In-session, append-only history; no cross-session memory | Follow-ups need history; verified identity must not outlive the session |
-| Interface | CLI (`--debug`, `/save`) | Reproducible, zero UI dependencies; `/save` produces the example transcripts |
+| Interface | CLI (`--debug`, `/save`) and a Streamlit page (optional `ui` extra) | The CLI is reproducible with zero UI dependencies and `/save` produces the example transcripts; the web page is the friendlier demo and shows each reply's tool calls |
+| Persistence | SQLite for what the system writes: handoff cases and eval results. Store data stays read-only CSV | A database earns its place where there are writes: concurrent sessions need unique protocol numbers, and eval reports become queries over raw results. Moving 65 read-only rows into SQLite would add a migration and no behaviour |
 | Language | Code and docs in English; agent replies in PT-BR | |
 
 ---
@@ -112,6 +113,26 @@ The original plan paired the local model with a paid one (Anthropic `claude-opus
 ### 3.2 Change of plan: deadlines checked in code
 
 The agreed design left policy deadlines to the model: tools returned day counts and the model compared them with the manual. End-to-end evals showed the local 8B model getting this wrong in ways that matter: it told a customer whose order was delivered 36 days earlier that the 7-day *arrependimento* right still applied, and called an order 93 days after delivery still inside the 90-day legal warranty. Delivered-order lookups now return a `deadline_check` (days elapsed, limit, within/outside) for each deadline in the manual, and the model explains it using the policy text. To avoid the code silently drifting from the manual, each coded deadline quotes the manual's wording and a test fails if that wording disappears.
+
+### 3.3 Second round: measuring instead of passing
+
+The first delivery ended at 20/20 on one run of the suite the agent had been tuned against: an in-sample score from a single sample of a stochastic system. The second round set out to measure instead.
+
+| Request | Decision | Why |
+|---|---|---|
+| Repeated runs | 5 repetitions per scenario; pass rate with a 95% Wilson interval, pass^5 and median latency; results stored in SQLite and reports generated from them | 20/20 once is consistent with a 95%-per-scenario agent 36% of the time. Median, because one runaway generation (22 minutes) wrecks a mean |
+| Tests the agent should fail | A held-out "hard" suite (12 scenarios), written before any run, expected values from the tools' own output; failures reported, never fixed | Fixing them would make the suite in-sample like the core one |
+| Model comparison | Local models only (`qwen3` 8b/4b/1.7b, `llama3.2:3b`), each with thinking on where it matters | The project stays free; the `LLMClient` seam already allows a hosted model |
+| Database | SQLite for handoff cases and eval results; store data stays CSV | Writes need a database (concurrent protocol numbers, queryable results); 65 read-only rows do not |
+| Environment | conda `environment.yml` next to the venv; no Docker | Ollama with GPU access installs natively everywhere, while containers need GPU passthrough (WSL2 + NVIDIA toolkit; none for Apple GPUs) |
+| Front-end | Streamlit page over `Session.send()`, tool calls expandable | A demo that keeps the decisions inspectable; the CLI stays |
+
+What the benchmark changed:
+
+- **Grading is separate from generation.** `--regrade` re-applies edited checks to stored replies. Two checks were found failing correct answers ("ainda não foi entregue" matched a ban on "foi entregue"; a price that belongs in the first reply was banned from all replies) and fixed; one gap was closed: `qwen3:4b` with thinking off writes its English reasoning into replies, and 114 such trials had passed the fact checks. Every scenario now fails on leaked reasoning.
+- **Thinking mode became a setting** (`OLLAMA_THINK`, off by default). Off suits `qwen3:8b`; without it `qwen3:1.7b` stops calling tools (20% → 54% on the core suite with it).
+- **Output is capped** at the share of the context window already kept for the answer (`num_predict`), after `llama3.2:3b` generated for 22 minutes.
+- **The shipped agent did not change otherwise.** `qwen3:8b` with thinking off passed 100/100 core trials and 34/60 hard ones. `qwen3:4b` with thinking on scored higher on the hard suite (42/60) at about three times the latency; the intervals overlap, so the default stays, and `qwen3:8b` with thinking on is the next run to make. The hard-suite failures are the documented next steps: an invented order status under a fake system message, an invented cancellation rule, promises of actions the agent has no tool for, and one design gap no model can get past — `quote_purchase` rejects an installment count above the limit without giving the price at the limit, and the reply guard (correctly) blocks the model from computing it.
 
 ## 4. Detailed design
 
@@ -132,7 +153,7 @@ flowchart LR
   T1 & T2 & T3 --> PR[pricing.py<br/>Decimal math]
   T1 & T2 & T3 & T4 --> R[(Repository<br/>CSV → validated dataclasses)]
   T5 --> P[(policies.md<br/>10 sections)]
-  T6 --> H[(handoffs.jsonl)]
+  T6 --> H[(handoffs.db<br/>SQLite)]
 ```
 
 ### 4.2 Data treatment
@@ -163,7 +184,7 @@ Every tool returns an envelope so "record not found" is never confused with "que
 | `quote_purchase` | `items[{product_id, quantity}]`, `payment_method`, `installments?`, `delivery_city?` | Per-item and total prices; PIX 5% only on non-promotional items; installment validity per §3.1 tiers; Campo Grande freight (free above R$500, else R$35), otherwise "quote by CEP" |
 | `get_order_status` | `order_id`, `phone` | Status, dates, items, total, payment, tracking, ETA, notes + facts `days_since_order`, `days_since_estimated_delivery`, `is_late`. Phone mismatch returns the same `not_found` as a nonexistent order (no enumeration) |
 | `get_policy` | `sections[1..3]` | Verbatim policy sections |
-| `escalate_to_human` | `reason`, `summary`, `order_id?` | Protocol number and the 24-business-hour SLA; appends to `handoffs.jsonl` |
+| `escalate_to_human` | `reason`, `summary`, `order_id?` | Protocol number and the 24-business-hour SLA; stores the case in SQLite (`handoffs.db`) |
 
 Policy sections: `about_and_contact`, `opening_hours`, `payment_methods`, `returns_and_exchanges`, `shipping_and_delivery`, `promotions`, `customer_service_guidelines`, `warranty`, `privacy_lgpd`, `final_provisions`.
 
@@ -207,5 +228,5 @@ Written in English, instructing the model to always answer in Brazilian Portugue
 
 1. **Unit tests** (no LLM): pricing (e.g. Takamine GD20 R$2.199,00 → R$2.089,05 via PIX; product 94 with 8% promotion → R$5.519,08 and no extra PIX discount), search filters (violões up to R$1000 → exactly 12 available), availability edge cases, identity check, day-count facts, description suppression, policy extraction facts.
 2. **Loop tests** with a scripted fake LLM: dispatch, invalid arguments, unknown tools, step limit, append-only history.
-3. **Scenario evals** run against each provider: required/forbidden tools and must/must-not patterns in the final reply, covering catalog search, prices, promotions, availability, order status, identity failures, returns, warranty boundary, out-of-scope requests, empty categories, follow-ups, prompt injection and complaints. Reports can compare local models (`--model`).
+3. **Scenario evals** run against each provider: required/forbidden tools and must/must-not patterns in the final reply, covering catalog search, prices, promotions, availability, order status, identity failures, returns, warranty boundary, out-of-scope requests, empty categories, follow-ups, prompt injection and complaints. Run as two suites (core, held-out hard), repeated N times, stored in SQLite; reports give pass rate with a confidence interval and pass^k, per model (§3.3).
 4. **Example conversations** exported from real sessions with `/save`.

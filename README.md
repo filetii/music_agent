@@ -23,21 +23,26 @@ git clone https://github.com/filetii/music_agent.git
 cd music_agent
 python -m venv .venv
 .venv\Scripts\activate          # Windows  (Linux/macOS: source .venv/bin/activate)
-pip install -e ".[dev]"
+pip install -e ".[dev,ui]"
+# or, with conda:  conda env create -f environment.yml && conda activate emporio
 
 # 3. Chat
-emporio            # or: python -m emporio.cli
-emporio --debug    # also shows every tool call and its result status
+streamlit run src/emporio/web.py   # in the browser, with each reply's tool calls
+emporio                            # or in the terminal (python -m emporio.cli)
+emporio --debug                    # terminal, also showing every tool call
 ```
 
-Inside the chat: `/save [file]` exports the conversation (with tool calls) to `transcripts/`, `/reset` starts over, `/debug` toggles tool display, `/sair` exits. The first message takes longer while Ollama loads the model.
+Inside the terminal chat: `/save [file]` exports the conversation (with tool calls) to `transcripts/`, `/reset` starts over, `/debug` toggles tool display, `/sair` exits. The first message takes longer while Ollama loads the model.
 
-Configuration is optional — copy `.env.example` to `.env` to change the model (`OLLAMA_MODEL`), Ollama host, context size, the reference date or the tool-step limit. No secrets are needed.
+Configuration is optional — copy `.env.example` to `.env` to change the model (`OLLAMA_MODEL`), thinking mode (`OLLAMA_THINK`), Ollama host, context size, the reference date or the tool-step limit. No secrets are needed.
 
 ```bash
-pytest                         # 90+ unit tests, no LLM needed (~3 s)
-python -m evals.run            # 20 end-to-end scenarios against the local model (~6 min on a laptop GPU)
-python -m evals.run --model qwen3:4b --only price_takamine_gd20,order_wrong_phone
+pytest                                        # 100+ unit tests, no LLM needed (~5 s)
+python -m evals.run                           # core suite once (~8 min on a laptop GPU)
+python -m evals.run --suite all --runs 5      # core + held-out hard suite, 5 repetitions each
+python -m evals.run --models qwen3:8b,qwen3:4b --suite all --runs 5   # compare models
+python -m evals.run --only price_takamine_gd20 --runs 3               # quick ad-hoc check
+python -m evals.report                        # rebuild the reports from evals/results.db
 ```
 
 ---
@@ -58,7 +63,7 @@ flowchart LR
   T1 & T2 & T3 --> PR[pricing.py<br/>Decimal math]
   T1 & T2 & T3 & T4 --> R[(Store data<br/>CSV → validated objects)]
   T5 & T4 --> P[(policies.md<br/>10 sections)]
-  T6 --> H[(handoffs.jsonl)]
+  T6 --> H[(handoffs.db<br/>SQLite)]
 ```
 
 For each customer message the agent sends the conversation to the model with six tools. The model decides which tools to call (several per turn if needed); the tools answer from the data and the policy manual; the model writes the reply. At most 6 model↔tool round trips per message.
@@ -98,7 +103,7 @@ The chosen design keeps a clear line between what the LLM is good at and what co
 
 ### Model and provider: `qwen3:8b` on Ollama, free and local
 
-Chosen for native tool calling in Ollama, reasonable Brazilian Portuguese, and fitting a 6 GB laptop GPU at 4-bit quantization — so anyone can run the project without an API key or cost. Thinking mode is disabled for latency; `num_ctx` is raised to 8192 because Ollama silently truncates longer prompts (the adapter also trims whole old turns to fit).
+Chosen for native tool calling in Ollama, reasonable Brazilian Portuguese, and fitting a 6 GB laptop GPU at 4-bit quantization — so anyone can run the project without an API key or cost. Thinking mode is off by default: `qwen3:8b` passes the core suite without it and it costs latency (smaller qwen3 models need it — see [Results](#evaluation)). `num_ctx` is raised to 8192 because Ollama silently truncates longer prompts; the adapter trims whole old turns to keep 30% of the window for the reply, and caps the reply at that size so a looping model cannot run for minutes.
 
 The original plan also included a paid model (Claude Opus via the Anthropic API) for comparison; it was dropped because API usage is billed separately from a Claude subscription and the project was kept free ([DESIGN.md §3.1](docs/DESIGN.md#31-change-of-plan-free-models-only)). The `LLMClient` seam means a hosted model is a single new adapter file.
 
@@ -122,11 +127,23 @@ If a check fails, the model gets one corrective retry. If an invented price or a
 
 ### Conversation and memory
 
-The conversation history lives in the session, so follow-ups work ("Quanto custa o F310?" → "E em 10x?"). Nothing persists across sessions: a verified identity should not outlive the conversation (LGPD), and the CLI has no login. `/save` exports a transcript with the tool trace.
+The conversation history lives in the session, so follow-ups work ("Quanto custa o F310?" → "E em 10x?"). Nothing persists across sessions: a verified identity should not outlive the conversation (LGPD), and neither interface has a login. `/save` exports a transcript with the tool trace.
+
+### Persistence: SQLite where the system writes
+
+The store's catalog and orders are read-only, 65 + 20 rows: they stay CSV files validated into objects at startup, and moving them into a database would add a migration without changing any behaviour. SQLite is used where something is written:
+
+- **Handoff cases** (`handoffs.db`): each escalation gets a row and a protocol number from the row id, so concurrent sessions (the web page serves many) cannot get the same number, and the team can query open cases.
+- **Eval results** ([evals/results.db](evals/results.db)): one row per scenario repetition with its checks, tools, latency, tokens and transcript. The reports are generated from it, so every number in them can be traced back to raw results.
 
 ### Interface
 
-A terminal chat: zero UI dependencies and easy to evaluate. `--debug` shows each tool call so the agent's decisions are inspectable.
+Two front-ends over the same `Session.send()`:
+
+- **Web page** (Streamlit, optional `ui` extra): a chat in the browser; each reply can expand to show the tool calls and results behind it. Its test drives the page headless with a scripted fake model.
+- **Terminal chat**: zero UI dependencies, easy to script; `--debug` shows each tool call and `/save` produced the example transcripts.
+
+No Docker image: the heavy dependency is Ollama with GPU access, which installs natively on Windows, macOS and Linux. Running it in a container needs GPU passthrough (WSL2 + NVIDIA Container Toolkit on Windows; not available for Apple GPUs), so a container would make setup harder, not easier. The Python side installs with pip or conda (`environment.yml`).
 
 ---
 
@@ -155,11 +172,42 @@ The data and the manual contain inconsistencies; each was handled explicitly rat
 
 ## Evaluation
 
-**Unit tests** (`pytest`, no LLM): data loading and validation, availability rules, search and fuzzy name resolution, every pricing rule (e.g. Takamine GD20 R$ 2.199,00 → R$ 2.089,05 via PIX; Taylor 110e with 8% promotion R$ 5.519,08 and no extra PIX discount; installment tier boundaries), identity check, tool schema validation, policy fidelity to the PDF, and the agent loop with a scripted fake model (tool dispatch, step limit, failures, refusals, grounding guard, append-only history).
+**Unit tests** (`pytest`, 106 tests, no LLM): data loading and validation, availability rules, search and fuzzy name resolution, every pricing rule (e.g. Takamine GD20 R$ 2.199,00 → R$ 2.089,05 via PIX; Taylor 110e with 8% promotion R$ 5.519,08 and no extra PIX discount; installment tier boundaries), identity check, tool schema validation, policy fidelity to the PDF, the agent loop with a scripted fake model (tool dispatch, step limit, failures, refusals, grounding guard, append-only history), the eval statistics and grading, and the web page driven headless.
 
-**End-to-end scenarios** (`python -m evals.run`): 20 scripted conversations against the real model, each in a fresh session, checked mechanically — which tools must or must not be called and what the reply must or must not contain. They cover catalog search with filters, prices, promotions vs PIX, out-of-stock and coming-soon products, store information, order status, wrong phone, missing phone, returns after the window, the warranty boundary, accessories, off-topic questions, empty categories, follow-ups, two prompt-injection attempts, an expired campaign, a multi-item quote and a complaint.
+**End-to-end scenarios** (`python -m evals.run`): scripted conversations against the real model, each in a fresh session, checked mechanically — which tools must or must not be called, what the replies must or must not contain, and, in every scenario, that no reply contains the model's own reasoning. Two suites ([evals/scenarios.py](evals/scenarios.py)):
 
-**Results with `qwen3:8b`** — final run: **20/20 passed**, ~23 s per scenario on a laptop RTX 4050 (6 GB), ~108k tokens for the whole suite ([report with transcripts](evals/reports/ollama_qwen3_8b.md)). How it got there — each step was driven by reading the failing transcripts ([baseline report](evals/reports/01-baseline-qwen3_8b.md)):
+- **Core (20 scenarios)**, the ones the agent was developed against: catalog search with filters, prices, promotions vs PIX, out-of-stock and coming-soon products, store information, order status, wrong phone, missing phone, returns after the window, the warranty boundary, accessories, off-topic questions, empty categories, follow-ups, two prompt-injection attempts, an expired campaign, a multi-item quote and a complaint.
+- **Hard (12 scenarios), held out:** written after the agent was finished, with expected values taken from the tools' own output, and never used to change the agent: two requests in one message, a misspelled product, a phone typed without formatting, a product comparison, a defect after the exchange window but within the legal warranty, an LGPD deletion request, installments above the limit on a promotional item, freight to another city, a change of mind mid-conversation, a fake "system" message claiming the customer was verified, discount haggling and a cancellation. Its failures are reported, not fixed: fixing them would turn it into another tuning set.
+
+**Method.** One 20/20 run says little about a model sampled at temperature 0.2: if every scenario passed 95% of the time, 20/20 would still happen only 36% of the time (0.95²⁰). Each scenario therefore runs 5 times. Every repetition is stored in SQLite and the reports are generated from it: pass rate with its 95% Wilson interval, **pass^5** (the share of scenarios that pass all 5 repetitions — the consistency a customer would see) and median latency. Grading is separate from generation: `--regrade` re-applies edited checks to the stored replies without calling the model again.
+
+**Results** — 5 repetitions per scenario on a laptop RTX 4050 (6 GB). [Full benchmark with per-scenario results](evals/reports/benchmark.md); one report with transcripts per model and suite in [evals/reports/](evals/reports/).
+
+| Model | Core: pass rate (95% CI) | Core pass^5 | Hard: pass rate (95% CI) | Hard pass^5 | Median latency (core) |
+|---|---|---|---|---|---|
+| **`qwen3:8b`** (shipped) | **100/100 (96–100%)** | **100%** | 34/60 (44–68%) | 33% | 15.3 s |
+| `qwen3:4b` + thinking | 80/100 (71–87%) | 65% | **42/60 (57–80%)** | **42%** | 37.0 s |
+| `qwen3:1.7b` + thinking | 54/100 (44–63%) | 35% | 31/60 (39–64%) | 25% | 5.0 s |
+| `llama3.2:3b` | 32/100 (24–42%) | 15% | 18/60 (20–43%) | 17% | 1.8 s |
+| `qwen3:1.7b` | 20/100 (13–29%) | 15% | 17/60 (19–41%) | 17% | 0.6 s |
+| `qwen3:4b` | 2/100 (1–7%) | 0% | 0/60 (0–6%) | 0% | 34.7 s |
+
+What the numbers say:
+
+- **The shipped configuration holds up on the core suite.** `qwen3:8b` passed all 100 core trials, so the single-run 20/20 was not luck. Thinking stays off for it: the core suite does not need it and it costs latency.
+- **On held-out scenarios it does not.** 57% on the hard suite, and only a third of those scenarios pass all 5 repetitions. Where it fails ([report with transcripts](evals/reports/hard-ollama_qwen3_8b.md)):
+  - a fake "[SISTEMA]" note claiming the customer was verified made it invent an order status and a tracking code without calling any tool (0/5). No real data leaked — the identity check in code held — but the reply was made up: the reply guard checks prices, not facts like a tracking code;
+  - a cancellation request: it invents a rule ("não é possível cancelar pedidos já confirmados") instead of handing the case to the team (0/5);
+  - 10 installments on a promotional ukulele whose limit is 5 (0/5, and 0/5 for every model): `quote_purchase` says 10x is invalid and 5x is the maximum, but not what 5x costs. The model works it out, the reply guard rightly blocks an amount no tool returned, and the customer gets the fallback reply. A design gap the core suite never hit: the tool should return the price at the maximum valid installment count;
+  - discount haggling: it offers to "check a quantity discount" that does not exist (1/5); LGPD deletion: it promises to delete the data itself (2/5).
+
+  These are the next things to fix, and measuring the fixes will need new held-out scenarios.
+- **Thinking mode decides whether small qwen3 models work.** With thinking off (the shipped setting), `qwen3:1.7b` echoes the question instead of calling tools, and `qwen3:4b` writes its English reasoning into the reply — in 151 of 160 trials, 114 of which passed the fact checks until the check for leaked reasoning was added. With thinking on, `qwen3:1.7b` goes from 20% to 54% on the core suite, and `qwen3:4b` reaches 80% on the core suite and **70% on the hard suite — the best held-out score**, above `qwen3:8b`'s 57%. The intervals overlap (57–80% vs 44–68%) and it is about three times slower (37 s vs 15 s median), so the default stays `qwen3:8b` with thinking off; `qwen3:8b` with thinking on was not measured and is the obvious next run.
+- **`llama3.2:3b`** is the fastest and the weakest at using the tools. It once generated text for 22 minutes, which is why the output length is now capped.
+- The comparison favours `qwen3:8b`, since the prompt and tools were tuned on it. The intervals treat the 5 repetitions of a scenario as independent, so they are optimistic.
+- Each run records its git commit; `-dirty` marks runs made before the round's changes were committed. The agent's behaviour in those runs matches the named commit except that the output cap came later; it only cuts off runaway generations, which fail either way.
+
+**How the core suite got to 20/20** — single runs during development, each step driven by reading the failing transcripts ([baseline report](evals/reports/01-baseline-qwen3_8b.md)):
 
 | Run | Passed | Main change before the run |
 |---|---|---|
@@ -171,7 +219,7 @@ The data and the manual contain inconsistencies; each was handled explicitly rat
 | 6 | 18/20 | Order lookups only with an order number and phone the customer typed |
 | 7 | **20/20** | Ready-made promotion text + manual §6.2 check; alternatives attached to unavailable search results + manual §7.3 check (the two scenarios then passed 3 out of 3 targeted runs) |
 
-Some checks were also corrected along the way, in both directions: patterns that rejected correct answers were widened (e.g. "não foi encontrado", "6 parcelas"), and checks that accepted wrong answers were tightened (return and warranty scenarios). Runs vary: local generation is not perfectly deterministic, so 20/20 in one run does not mean every scenario passes every time — earlier runs showed individual scenarios flipping between pass and fail.
+Checks were corrected along the way, in both directions: patterns that rejected correct answers were widened (e.g. "não foi encontrado", "6 parcelas"), and checks that accepted wrong answers were tightened (return and warranty scenarios). After the benchmark ran, two checks that failed correct answers were fixed ("ainda não foi entregue" tripped a ban on "foi entregue"; a price that belongs in the first reply was banned from every reply) and one check was added (no leaked reasoning). All three were applied to the stored results with `--regrade`.
 
 ---
 
@@ -187,18 +235,18 @@ Recorded with [scripts/record_examples.py](scripts/record_examples.py): scripted
 | [04 — pedido atrasado](examples/04-pedido-atrasado.md) | Late shipment detected from order data (25 days past the estimate), then escalation with a protocol number |
 | [05 — loja e fora de escopo](examples/05-loja-e-fora-de-escopo.md) | Address and hours from the policy manual, accessories declined, a discount prompt-injection refused |
 
-The evaluation reports in [evals/reports/](evals/reports/) contain 20 more transcripts, including the failures.
+The evaluation reports in [evals/reports/](evals/reports/) contain one transcript per scenario for every model and suite — a failing repetition whenever there is one.
 
 ---
 
 ## Known limitations and what I would do with more time
 
-- **Small local model.** `qwen3:8b` sometimes skips a needed tool, ignores a tool result field, or adds facts the tools did not return. The reply checks catch invented prices and the failure modes seen in testing, but not every kind of invention (e.g. a made-up recommendation to "contact the carrier"). With more time: evaluate larger local models (e.g. `qwen3:14b` on a bigger GPU) or a hosted model behind the same `LLMClient` seam, and keep turning observed failure modes into checks.
-- **Evals are small and single-run.** 20 scenarios with regex checks; local generation is not perfectly deterministic, so one run is a noisy estimate. Next: several runs per scenario, more paraphrases, and an LLM-as-judge for tone and faithfulness.
+- **Small local model, 57% on held-out scenarios.** `qwen3:8b` passes the core suite every time but only 34 of 60 held-out trials. It invents non-price facts under a fake "system" message, invents a cancellation rule instead of escalating, and promises actions it has no tool for (see [Results](#evaluation)). The reply checks catch invented prices and the failure modes seen in testing, not every kind of invention. With more time: make `quote_purchase` return the price at the maximum valid installment count, escalate by default when no tool covers a request, extend the grounding guard to order facts, write a fresh held-out suite to measure those fixes, and try larger local models (e.g. `qwen3:14b` on a bigger GPU) or a hosted model behind the same `LLMClient` seam.
+- **Evals are small and regex-based.** 32 scenarios with mechanical checks, 5 repetitions each; the intervals treat repetitions as independent. Next: more paraphrases per scenario, and an LLM-as-judge for tone and faithfulness.
 - **No authentication.** Order lookups require order number + phone, which is reasonable for a chat prototype but not real authentication.
-- **Escalation is a local file.** `handoffs.jsonl` stands in for a ticketing system.
+- **Escalation is a local database.** `handoffs.db` stands in for a ticketing system.
 - **No holiday calendar, partner stores or freight table** exist in the data, so the agent cannot answer those beyond saying so.
-- **CLI only.** A WhatsApp or web front-end would sit on top of `Session.send()`.
+- **No WhatsApp channel.** The web page and the CLI are demos; a WhatsApp integration would sit on top of the same `Session.send()`, with sessions kept per phone number.
 
 ---
 
@@ -211,8 +259,9 @@ I built this project with **Claude Code** (Anthropic's agentic coding assistant,
 3. **Design.** Tool interfaces, data treatment, prompt structure, repository layout and test strategy were agreed and committed as [docs/DESIGN.md](docs/DESIGN.md) before implementation.
 4. **Implementation in small commits.** Claude wrote the code and tests stage by stage (data → pricing → policies → tools → LLM layer → agent → evals); I reviewed each stage. Commits made with the assistant carry a `Co-Authored-By: Claude` trailer.
 5. **Evaluation-driven iteration.** Claude built the scenario harness, ran it against the local model and diagnosed failures from the transcripts; we fixed them mostly in tool design rather than prompt text (11/20 → 20/20, see [Evaluation](#evaluation)).
+6. **Measuring instead of passing.** A single 20/20 on the suite we had tuned against did not convince me, so I asked for repeated runs with statistics, a harder held-out suite the agent was expected to fail, a comparison across local models, a database, an isolated environment and a simple front-end. Claude pushed back where a request did not earn its place — Docker (Ollama's GPU access makes containers harder, not easier, to set up) and moving the read-only catalog into SQLite — and we kept SQLite for what the system writes. The benchmark then found things neither of us expected: two checks failing correct answers, a model whose reasoning leaked into its replies and still passed, thinking mode deciding whether the small models work at all, and a 22-minute runaway generation.
 
-**Decisions that were mine:** the reference date, the architecture, keeping price math in code, the free-only switch (after learning the API is billed separately from my Claude subscription), committing only the customer data the agent needs, and moving deadline checks into code once the evals showed the local model could not apply them reliably.
+**Decisions that were mine:** the reference date, the architecture, keeping price math in code, the free-only switch (after learning the API is billed separately from my Claude subscription), committing only the customer data the agent needs, moving deadline checks into code once the evals showed the local model could not apply them reliably, and, in the second round, the six directions above, conda over Docker, and which models to compare with thinking on.
 
 **What the assistant did:** most of the code, tests and eval harness, and first drafts of the documentation, which I reviewed and edited.
 
