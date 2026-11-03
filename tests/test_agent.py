@@ -39,7 +39,7 @@ def answer(text):
 
 @pytest.fixture
 def make_session(tmp_path):
-    settings = replace(load_settings(), handoffs_path=tmp_path / "handoffs.jsonl", max_tool_steps=3)
+    settings = replace(load_settings(), handoffs_path=tmp_path / "handoffs.db", max_tool_steps=3)
 
     def make(*responses):
         llm = ScriptedLLM(responses)

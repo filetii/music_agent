@@ -6,16 +6,15 @@ so "the record does not exist" is never confused with "the query failed". Handle
 never raise: validation problems and unexpected exceptions become envelopes too.
 """
 
-import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from . import pricing
+from . import handoffs, pricing
 from .data import Product, Store
 from .policies import DEADLINES, SECTION_SUMMARIES
 from .pricing import brl
@@ -373,11 +372,7 @@ def get_policy(ctx: ToolContext, args: dict) -> dict:
 
 
 def escalate_to_human(ctx: ToolContext, args: dict) -> dict:
-    existing = ctx.handoffs_path.read_text(encoding="utf-8").splitlines() if ctx.handoffs_path.exists() else []
-    protocol = f"ATD-{ctx.reference_date:%Y%m%d}-{len(existing) + 1:03d}"
-    record = {"protocol": protocol, "created_at": datetime.now().isoformat(timespec="seconds"), **args}
-    with open(ctx.handoffs_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    protocol = handoffs.register(ctx.handoffs_path, ctx.reference_date, **args)
     return _envelope(
         "ok",
         data={"protocol": protocol, "response_deadline": "até 24 horas úteis (manual, seção 7.3)"},

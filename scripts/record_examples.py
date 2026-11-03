@@ -42,7 +42,7 @@ CONVERSATIONS = {
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
-    settings = replace(load_settings(), handoffs_path=Path(tempfile.mkdtemp()) / "handoffs.jsonl")
+    settings = replace(load_settings(), handoffs_path=Path(tempfile.mkdtemp()) / "handoffs.db")
     for filename, customer_turns in CONVERSATIONS.items():
         session = create_session(settings, now=datetime(2026, 3, 25, 10, 0))
         turns = [(text, session.send(text)) for text in customer_turns]

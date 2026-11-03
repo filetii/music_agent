@@ -31,5 +31,5 @@ def load_settings() -> Settings:
         reference_date=date.fromisoformat(os.getenv("REFERENCE_DATE", "2026-03-25")),
         max_tool_steps=int(os.getenv("MAX_TOOL_STEPS", "6")),
         data_dir=PROJECT_ROOT / "data",
-        handoffs_path=PROJECT_ROOT / "handoffs.jsonl",
+        handoffs_path=PROJECT_ROOT / "handoffs.db",
     )

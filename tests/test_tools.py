@@ -1,4 +1,5 @@
-import json
+import sqlite3
+from contextlib import closing
 from datetime import date
 
 import pytest
@@ -17,7 +18,7 @@ def registry(store, tmp_path):
         store=store,
         policies=load_policies(PROJECT_ROOT / "data" / "policies.md"),
         reference_date=date(2026, 3, 25),
-        handoffs_path=tmp_path / "handoffs.jsonl",
+        handoffs_path=tmp_path / "handoffs.db",
     )
     return ToolRegistry(build_tools(store), context)
 
@@ -208,5 +209,6 @@ def test_escalation_writes_handoff_with_sequential_protocol(registry):
     first = registry.run("escalate_to_human", args)["data"]["protocol"]
     second = registry.run("escalate_to_human", args)["data"]["protocol"]
     assert (first, second) == ("ATD-20260325-001", "ATD-20260325-002")
-    lines = registry.context.handoffs_path.read_text(encoding="utf-8").splitlines()
-    assert json.loads(lines[0])["order_id"] == 8
+    with closing(sqlite3.connect(registry.context.handoffs_path)) as conn:
+        rows = conn.execute("SELECT protocol, reason, order_id FROM handoffs ORDER BY id").fetchall()
+    assert rows == [(first, "complaint", 8), (second, "complaint", 8)]
