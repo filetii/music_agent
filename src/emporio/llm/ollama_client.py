@@ -9,6 +9,7 @@ from ..tools import Tool
 from .base import AssistantMessage, LLMResponse, Message, ToolCall, ToolResultsMessage, UserMessage
 
 CHARS_PER_TOKEN = 3  # rough estimate, conservative for Portuguese text and JSON
+ANSWER_SHARE = 0.3  # of the context window, kept for the model's output (thinking included)
 
 
 class OllamaClient:
@@ -25,9 +26,9 @@ class OllamaClient:
             for t in tools
         ]
         # Ollama silently drops the start of a prompt that exceeds num_ctx, so trim whole old
-        # turns ourselves, keeping ~30% of the window free for the answer.
+        # turns ourselves, keeping ANSWER_SHARE of the window free for the answer.
         fixed_chars = len(system) + len(json.dumps(tool_specs))
-        history = trim_history(history, int(self.num_ctx * 0.7 * CHARS_PER_TOKEN) - fixed_chars)
+        history = trim_history(history, int(self.num_ctx * (1 - ANSWER_SHARE) * CHARS_PER_TOKEN) - fixed_chars)
 
         response = self.client.chat(
             model=self.model,
@@ -36,7 +37,9 @@ class OllamaClient:
             # Off by default: for qwen3:8b thinking adds latency without helping tool selection. Smaller
             # qwen3 models need it (1.7b stops calling tools without it; see the benchmark).
             think=self.think,
-            options={"num_ctx": self.num_ctx, "temperature": 0.2},
+            # The answer may not outgrow the space kept for it. Without a cap a looping model ran for
+            # 22 minutes in the benchmark; hitting it ends the turn with the "instabilidade" reply.
+            options={"num_ctx": self.num_ctx, "temperature": 0.2, "num_predict": int(self.num_ctx * ANSWER_SHARE)},
         )
         message = response.message
         calls = [
