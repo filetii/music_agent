@@ -202,7 +202,7 @@ sequenceDiagram
   A->>T: execute both
   T-->>A: delivered, days_since_estimated_delivery=36 / policy text
   A->>M: both results in one message
-  M-->>A: arrependimento window passed; defects still under legal warranty; offer a human
+  M-->>A: arrependimento window passed, defects still under legal warranty, offer a human
   A-->>C: reply in PT-BR
 ```
 
