@@ -1,0 +1,12 @@
+# Conda alternative to the venv in the README:
+#   conda env create -f environment.yml
+#   conda activate emporio
+# Ollama itself is not a Python package: install it separately (https://ollama.com/download).
+name: emporio
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -e .[dev,ui]
