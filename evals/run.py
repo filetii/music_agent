@@ -29,6 +29,9 @@ from .report import write_reports
 from .scenarios import SUITES, Scenario
 
 NOW = datetime(2026, 3, 25, 10, 0)  # a Wednesday morning: store open, deterministic prompt
+# The model's own reasoning written into a reply (in English, while replies are Portuguese).
+# qwen3:4b does this with thinking off; replies that did so still passed the fact checks.
+LEAKED_REASONING = re.compile(r"\b(the user|let me|I need to|I should|I'll|I will|we need|Okay,|Wait,|First,|the tool)\b")
 
 
 def check(scenario: Scenario, replies) -> list[str]:
@@ -47,6 +50,8 @@ def check(scenario: Scenario, replies) -> list[str]:
     failures += [
         f"forbidden in final reply /{p}/" for p in scenario.final_must_not_match if re.search(p, final, re.IGNORECASE)
     ]
+    if any(LEAKED_REASONING.search(r.text) for r in replies):
+        failures.append("reasoning leaked into a reply")
     return failures
 
 

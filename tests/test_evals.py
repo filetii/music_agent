@@ -38,6 +38,9 @@ def test_check_reports_each_kind_of_failure():
     ]
     assert check(scenario, [Reply("R$ 599,90", [ToolTrace("get_product_details", {}, {}),
                                                 ToolTrace("quote_purchase", {}, {})])]) == []
+    thinking_aloud = Reply("Okay, the user wants the price. O C40 custa R$ 599,90.",
+                           [ToolTrace("get_product_details", {}, {}), ToolTrace("quote_purchase", {}, {})])
+    assert check(scenario, [thinking_aloud]) == ["reasoning leaked into a reply"]
 
 
 def test_results_round_trip_into_reports(tmp_path):
